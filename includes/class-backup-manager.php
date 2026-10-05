@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class SiteVault_Backup_Manager {
 
-	public function create_backup(): array {
+	public function create_backup( string $backup_type = 'full', array $context = array() ): array {
 		$backup_id = 'sv-' . gmdate( 'Ymd-His' ) . '-' . strtolower( wp_generate_password( 6, false, false ) );
 		$base_dir  = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id;
 
@@ -18,6 +18,8 @@ final class SiteVault_Backup_Manager {
 		}
 
 		$manifest = SiteVault_Backup_Manifest::create( $backup_id );
+		$manifest['backup_type'] = sanitize_key( $backup_type );
+		$manifest['context']     = $context;
 		$written  = file_put_contents(
 			$base_dir . '/manifest.json',
 			wp_json_encode( $manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ),
