@@ -23,12 +23,12 @@ Tasks:
 - [x] Full Admin Create Backup workflow
 - [ ] Progress/status endpoint
 - [ ] Error and operation logging
-- [ ] Final M1 package/download integration test
+- [x] Final M1 package/download integration test
 
 ## SITEVAULT-M2 — Restore & Migration
 
-- Package validation
-- Batch extraction
+- [x] Package validation foundation
+- [ ] Batch extraction
 - Database importer
 - URL/path replacement
 - Serialized-data-safe migration
