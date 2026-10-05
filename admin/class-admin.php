@@ -43,6 +43,7 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_content_stage_extract', array( $this, 'handle_ajax_content_stage_extract' ) );
 		add_action( 'wp_ajax_sitevault_content_stage_verify', array( $this, 'handle_ajax_content_stage_verify' ) );
 		add_action( 'admin_post_sitevault_seal_cutover_readiness', array( $this, 'handle_seal_cutover_readiness' ) );
+		add_action( 'admin_post_sitevault_execute_cutover', array( $this, 'handle_execute_cutover' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -609,6 +610,64 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_execute_cutover(): void {
+		$this->authorise_request( 'sitevault_execute_cutover' );
+
+		$phrase = isset( $_POST['sitevault_confirm_phrase'] )
+			? strtoupper( trim( sanitize_text_field( wp_unslash( $_POST['sitevault_confirm_phrase'] ) ) ) )
+			: '';
+		$acknowledged = isset( $_POST['sitevault_cutover_ack'] ) && '1' === (string) $_POST['sitevault_cutover_ack'];
+
+		if ( 'RESTORE' !== $phrase || ! $acknowledged ) {
+			$this->redirect_with_message(
+				'error',
+				'Live cutover was not started. Tick the acknowledgement and type RESTORE exactly.'
+			);
+		}
+
+		$plan      = get_option( 'sitevault_last_restore_plan', array() );
+		$safety    = ( new SiteVault_Restore_Safety_Manager() )->get_state();
+		$database  = ( new SiteVault_Database_Stager() )->get_state();
+		$content   = ( new SiteVault_Content_Stager() )->get_state();
+		$readiness = ( new SiteVault_Cutover_Readiness() )->get_state();
+
+		$manager = new SiteVault_Cutover_Manager();
+		$result  = $manager->execute(
+			is_array( $plan ) ? $plan : array(),
+			is_array( $safety ) ? $safety : array(),
+			is_array( $database ) ? $database : array(),
+			is_array( $content ) ? $content : array(),
+			is_array( $readiness ) ? $readiness : array()
+		);
+
+		if ( ! $result['success'] ) {
+			$state = is_array( $result['state'] ?? null ) ? $result['state'] : array();
+
+			if ( ! empty( $state['rollback_success'] ) ) {
+				$this->redirect_with_message( 'error', $result['message'] ?? 'Cutover failed and was rolled back.' );
+			}
+
+			wp_die(
+				esc_html( $result['message'] ?? 'Cutover failed and automatic rollback was incomplete.' ),
+				'SiteVault recovery required',
+				array( 'response' => 500 )
+			);
+		}
+
+		$target = esc_url( (string) ( $result['state']['target_home_url'] ?? home_url( '/' ) ) );
+		$message = '<h1>SiteVault restore completed</h1>';
+		$message .= '<p>The live database and wp-content promotion passed verification.</p>';
+		$message .= '<p><strong>Important:</strong> a cross-domain restore can replace the WordPress users table, so your previous target-site admin session may no longer be valid.</p>';
+		$message .= '<p><a class="button button-primary" href="' . $target . '">Open restored website</a></p>';
+		$message .= '<p>The pre-restore safety package and fast rollback material have been retained.</p>';
+
+		wp_die(
+			wp_kses_post( $message ),
+			'SiteVault restore complete',
+			array( 'response' => 200 )
+		);
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -641,6 +700,8 @@ final class SiteVault_Admin {
 		$content_staging   = $content_stager->get_state();
 		$cutover_gate      = new SiteVault_Cutover_Readiness();
 		$cutover_readiness = $cutover_gate->get_state();
+		$cutover_manager   = new SiteVault_Cutover_Manager();
+		$cutover_transaction = $cutover_manager->get_latest_state();
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
 	}
