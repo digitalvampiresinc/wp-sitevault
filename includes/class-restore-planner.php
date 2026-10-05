@@ -82,6 +82,11 @@ final class SiteVault_Restore_Planner {
 
 		if ( ! $sql_inspection['success'] ) {
 			$blockers[] = $sql_inspection['message'];
+		} elseif (
+			(int) ( $manifest['payload']['database']['tables'] ?? 0 ) > 0 &&
+			count( $sql_inspection['tables'] ?? array() ) !== (int) ( $manifest['payload']['database']['tables'] ?? 0 )
+		) {
+			$blockers[] = 'Database dump table count does not match the package manifest.';
 		}
 
 		if ( $url_replacement_required || $site_url_change_required ) {
