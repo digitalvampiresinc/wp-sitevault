@@ -12,13 +12,14 @@ Tasks:
 - [x] Plugin bootstrap
 - [x] Runtime storage foundation
 - [x] Initial manifest generator
-- [ ] Database exporter
+- [x] Resumable database exporter foundation
 - [ ] File inventory/scanner
 - [ ] wp-content archive engine
 - [ ] SHA-256 checksums
 - [ ] Package builder
 - [ ] Backup history
-- [ ] Admin Create Backup workflow
+- [x] Manual database backup test workflow
+- [ ] Full Admin Create Backup workflow
 - [ ] Progress/status endpoint
 - [ ] Error and operation logging
 - [ ] M1 integration test
