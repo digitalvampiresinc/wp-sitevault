@@ -135,3 +135,85 @@ After the target safety package verifies successfully, SiteVault creates a seale
 This seal proves the target rollback package exists before the future execution layer can begin.
 
 The execution lock remains in place in this phase. Database import and live wp-content replacement are not yet implemented.
+
+
+## Phase 4 — Shadow Database Staging
+
+After the restore plan is Ready and the mandatory target safety snapshot is Safety Ready, SiteVault may stage the source database into isolated shadow tables.
+
+This phase still does not replace any live WordPress table.
+
+### Shadow Namespace
+
+Every source table is mapped to a unique staging namespace derived from the restore Plan ID and target safety snapshot.
+
+Example:
+
+```
+wp_posts
+→
+svstg_<token>_posts
+```
+
+The staging engine validates every generated identifier and drops only tables in its own generated namespace when restarting the same staging run.
+
+### SQL Execution Restrictions
+
+The SiteVault V1 database dump is streamed in bounded batches.
+
+The staging executor accepts only the SQL statement types produced by the SiteVault exporter:
+
+- CREATE TABLE
+- INSERT INTO
+
+Session SET statements are ignored and comment-prefixed DROP statements are not executed because SiteVault controls the shadow namespace itself.
+
+Unexpected SQL types such as UPDATE, DELETE, ALTER, procedure creation or other commands are blocked.
+
+### Import Verification
+
+After import, SiteVault verifies:
+
+- every expected shadow table exists
+- staged table count matches the restore plan
+- total staged row count matches the manifest row count
+
+If any count differs, staging fails and live promotion remains locked.
+
+### Migration Transform Staging
+
+For cross-domain restores, URL and filesystem-path transformations run only against shadow tables.
+
+The transformer:
+
+- discovers text/blob/json-like columns
+- requires a primary or unique key for safe row updates
+- processes rows in bounded batches
+- replaces source home/site URLs with target URLs
+- replaces source wp-content filesystem paths with target paths
+- handles JSON/plain-text strings
+- detects PHP-serialized values
+- unserializes arrays/scalars, replaces nested values, and reserializes them so PHP string lengths remain valid
+- blocks serialized object data that requires a dedicated object-safe migration layer
+- skips serialized decoding entirely when the value contains none of the migration strings
+
+After transformation, total staged row count is checked again.
+
+### Prefix Remapping
+
+The shadow table namespace itself is independent of the target WordPress prefix.
+
+If source and target WordPress prefixes differ, live promotion remains blocked until the dedicated option/usermeta prefix-data remapping layer is implemented. This avoids unsafe global prefix replacement inside arbitrary content.
+
+### Safety Result
+
+A successful Phase 4 ends with:
+
+- status = verified
+- live_tables_modified = false
+- verified table count
+- verified row count
+- migration replacement counters
+- optional promotion blocker
+
+Live table promotion/swap remains a separate later phase.
