@@ -53,3 +53,40 @@ SiteVault's final migration workflow must not depend on that limit. Chunked/resu
 - same-domain restore
 - serialized-data-safe URL/path migration
 - cross-domain clone
+
+
+## Phase 2 — Safe Extraction Workspace & Restore Plan
+
+After package validation succeeds, SiteVault can prepare an isolated restore-plan workspace.
+
+The workspace extracts only the known outer payload files:
+
+- manifest.json
+- database/database.sql
+- content/wp-content.zip
+- checksums/sha256.json
+
+The nested wp-content archive is not extracted into the live WordPress filesystem at this stage.
+
+Before planning continues, SiteVault:
+
+- revalidates the original package
+- verifies extracted payload SHA-256 values again
+- inspects actual CREATE TABLE statements in database.sql
+- requires SQL table count to match the manifest
+- rejects database tables outside the source database prefix
+- compares source and target home/site URLs
+- compares source and target database prefixes
+- compares WordPress and PHP versions
+- compares source and target wp-content filesystem paths
+- checks target wp-content write access
+- estimates restore disk-space requirements
+
+The planner classifies the operation as either:
+
+- same-domain restore
+- cross-domain migration
+
+The plan records whether URL replacement, site URL changes, database-prefix remapping or filesystem-path migration will be required.
+
+This phase remains non-destructive. The restore execution layer stays locked until a mandatory pre-restore safety snapshot and controlled staging workflow are implemented.
