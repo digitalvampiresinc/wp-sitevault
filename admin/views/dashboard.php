@@ -1189,6 +1189,94 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 		</div>
 	<?php endif; ?>
 
+	<?php
+	$cutover_matches_plan = ! empty( $cutover_readiness )
+		&& ( $cutover_readiness['plan_id'] ?? '' ) === ( $restore_plan['plan_id'] ?? '' );
+	$cutover_ready = $cutover_matches_plan && 'cutover_ready' === ( $cutover_readiness['status'] ?? '' );
+	?>
+
+	<?php if ( $content_stage_verified && $database_stage_verified && $safety_ready_for_db ) : ?>
+		<div class="sitevault-card">
+			<div class="sitevault-progress-head">
+				<div>
+					<h2 style="margin:0">Cutover Readiness Gate</h2>
+					<div class="sitevault-help">Final integrity gate before any live database or wp-content promotion can be introduced.</div>
+				</div>
+				<?php if ( $cutover_ready ) : ?>
+					<span class="sitevault-badge is-complete">Cutover Ready</span>
+				<?php else : ?>
+					<span class="sitevault-badge is-pending">Not sealed</span>
+				<?php endif; ?>
+			</div>
+
+			<?php if ( ! $cutover_ready ) : ?>
+				<div class="sitevault-status-banner is-warning">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>One final non-destructive verification remains.</strong>
+						<p>SiteVault will recheck the safety rollback package, shadow database and shadow wp-content, then create a sealed cutover-readiness record. No live promotion happens here.</p>
+					</div>
+				</div>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
+					<input type="hidden" name="action" value="sitevault_seal_cutover_readiness">
+					<?php wp_nonce_field( 'sitevault_seal_cutover_readiness' ); ?>
+					<?php submit_button( 'Seal Cutover Readiness', 'primary', 'submit', false ); ?>
+				</form>
+			<?php else : ?>
+				<div class="sitevault-status-banner is-complete">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>All staged restore components are sealed and ready for controlled cutover.</strong>
+						<p>The rollback package, shadow database and shadow wp-content were rechecked after staging. Live execution remains locked in this build.</p>
+					</div>
+				</div>
+
+				<div class="sitevault-metrics">
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Shadow DB tables</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $cutover_readiness['shadow_database_tables'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Shadow DB rows</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $cutover_readiness['shadow_database_rows'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Shadow files</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $cutover_readiness['shadow_content_files'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Shadow file bytes</span>
+						<span class="sitevault-metric-value" style="font-size:16px"><?php echo esc_html( size_format( (int) ( $cutover_readiness['shadow_content_bytes'] ?? 0 ), 2 ) ); ?></span>
+					</div>
+				</div>
+
+				<table class="sitevault-detail-table">
+					<tbody>
+						<tr><th>Restore mode</th><td><?php echo esc_html( $cutover_readiness['restore_mode'] ?? '—' ); ?></td></tr>
+						<tr><th>Source site</th><td><?php echo esc_html( $cutover_readiness['source_home_url'] ?? '—' ); ?></td></tr>
+						<tr><th>Target site</th><td><?php echo esc_html( $cutover_readiness['target_home_url'] ?? '—' ); ?></td></tr>
+						<tr><th>Safety snapshot ID</th><td><code><?php echo esc_html( $cutover_readiness['safety_snapshot_id'] ?? '—' ); ?></code></td></tr>
+						<tr><th>Safety package fingerprint</th><td><code><?php echo esc_html( substr( (string) ( $cutover_readiness['safety_package_sha256'] ?? '' ), 0, 20 ) ); ?>…</code></td></tr>
+						<tr><th>URL replacement required</th><td><?php echo ! empty( $cutover_readiness['url_replacement_required'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Filesystem path replacement required</th><td><?php echo ! empty( $cutover_readiness['path_replacement_required'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Live database modified</th><td><?php echo ! empty( $cutover_readiness['live_tables_modified'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Live wp-content modified</th><td><?php echo ! empty( $cutover_readiness['live_files_modified'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Destructive actions taken</th><td><?php echo ! empty( $cutover_readiness['destructive_actions_taken'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Live execution locked</th><td><?php echo ! empty( $cutover_readiness['execution_locked'] ) ? 'Yes' : 'No'; ?></td></tr>
+					</tbody>
+				</table>
+
+				<div class="sitevault-status-banner is-warning">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>Cutover is ready, but still not executable.</strong>
+						<p>The next build will introduce the controlled live-promotion transaction and automatic rollback path. This build deliberately stops before that point.</p>
+					</div>
+				</div>
+			<?php endif; ?>
+		</div>
+	<?php endif; ?>
+
 	<div class="sitevault-card">
 		<div class="sitevault-progress-head">
 			<div>
