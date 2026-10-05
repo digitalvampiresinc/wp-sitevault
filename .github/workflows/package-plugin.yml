@@ -1,0 +1,38 @@
+name: Package SiteVault
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: PHP syntax check
+        run: find . -path './build' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Build installable plugin ZIP
+        run: bash bin/build-plugin.sh
+
+      - name: Verify package root
+        run: |
+          unzip -l build/wp-sitevault.zip
+          test "$(unzip -Z1 build/wp-sitevault.zip | head -n 1)" = "wp-sitevault/"
+
+      - name: Upload installable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: wp-sitevault
+          path: build/wp-sitevault.zip
+          if-no-files-found: error
+          retention-days: 14

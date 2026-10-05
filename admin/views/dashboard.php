@@ -6,10 +6,57 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 $message = isset( $_GET['sitevault_msg'] ) ? sanitize_text_field( wp_unslash( $_GET['sitevault_msg'] ) ) : '';
 $status  = isset( $_GET['sitevault_status'] ) ? sanitize_key( wp_unslash( $_GET['sitevault_status'] ) ) : '';
+
+$db_status       = $database_state['status'] ?? '';
+$content_status  = $content_state['status'] ?? '';
+$content_phase   = $content_state['phase'] ?? 'scanning';
+$backup_done     = 'complete' === $db_status && 'complete' === $content_status;
+$legacy_db_only  = 'complete' === $db_status && empty( $content_state );
+$table_total     = count( $database_state['tables'] ?? array() );
+$table_done      = min( (int) ( $database_state['table_index'] ?? 0 ), $table_total );
+$files_found     = (int) ( $content_state['files_discovered'] ?? 0 );
+$files_archived  = (int) ( $content_state['files_archived'] ?? 0 );
+$archive_verified= ! empty( $content_state['archive_verified'] );
+
+$overall_progress = 0;
+$progress_mode     = 'determinate';
+$current_stage     = 'Ready';
+
+if ( $backup_done ) {
+	$overall_progress = 100;
+	$current_stage     = 'Backup complete';
+} elseif ( $legacy_db_only ) {
+	$overall_progress = 30;
+	$current_stage     = 'Previous database-only backup';
+} elseif ( 'running' === $db_status ) {
+	$ratio             = $table_total > 0 ? $table_done / $table_total : 0;
+	$overall_progress  = max( 2, (int) round( 30 * $ratio ) );
+	$current_stage     = 'Exporting database';
+} elseif ( 'complete' === $db_status && 'running' === $content_status ) {
+	if ( 'scanning' === $content_phase ) {
+		$overall_progress = 35;
+		$progress_mode     = 'indeterminate';
+		$current_stage     = 'Scanning wp-content';
+	} else {
+		$ratio             = $files_found > 0 ? min( 1, $files_archived / $files_found ) : 0;
+		$overall_progress  = 40 + (int) round( 55 * $ratio );
+		$current_stage     = 'Archiving wp-content';
+	}
+}
+
+$db_stage_state      = 'complete' === $db_status ? 'complete' : ( 'running' === $db_status ? 'running' : 'pending' );
+$scan_stage_state    = empty( $content_state ) ? 'pending' : ( 'scanning' === $content_phase && 'running' === $content_status ? 'running' : 'complete' );
+$archive_stage_state = 'complete' === $content_status ? 'complete' : ( 'archiving' === $content_phase && 'running' === $content_status ? 'running' : 'pending' );
+$verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 ?>
-<div class="wrap">
-	<h1>SiteVault</h1>
-	<p><strong>Version:</strong> <?php echo esc_html( SITEVAULT_VERSION ); ?></p>
+<div class="wrap sitevault-wrap">
+	<div class="sitevault-header">
+		<div>
+			<h1>SiteVault</h1>
+			<p class="sitevault-subtitle">Backup, restore and migration engine</p>
+		</div>
+		<span class="sitevault-version">Version <?php echo esc_html( SITEVAULT_VERSION ); ?></span>
+	</div>
 
 	<?php if ( $message ) : ?>
 		<div class="notice <?php echo 'error' === $status ? 'notice-error' : 'notice-success'; ?> is-dismissible">
@@ -17,134 +64,355 @@ $status  = isset( $_GET['sitevault_status'] ) ? sanitize_key( wp_unslash( $_GET[
 		</div>
 	<?php endif; ?>
 
-	<h2>SITEVAULT-M1 — Core Backup Engine</h2>
-	<p>Current development build: resumable database export.</p>
-
 	<?php if ( empty( $active_backup_id ) ) : ?>
-		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-			<input type="hidden" name="action" value="sitevault_start_backup">
-			<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
-			<?php submit_button( 'Start Test Backup', 'primary' ); ?>
-		</form>
+		<div class="sitevault-card">
+			<h2>Create Backup</h2>
+			<p>Start a full SiteVault test backup containing the WordPress database and wp-content files.</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="sitevault_start_backup">
+				<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
+				<?php submit_button( 'Start Test Backup', 'primary', 'submit', false ); ?>
+			</form>
+		</div>
 	<?php else : ?>
-		<table class="widefat striped" style="max-width:900px">
-			<tbody>
-				<tr>
-					<th style="width:220px">Active Backup</th>
-					<td><code><?php echo esc_html( $active_backup_id ); ?></code></td>
-				</tr>
-				<?php if ( $database_state ) : ?>
-					<tr>
-						<th>Database Status</th>
-						<td id="sitevault-db-status"><?php echo esc_html( $database_state['status'] ?? 'unknown' ); ?></td>
-					</tr>
-					<tr>
-						<th>Tables</th>
-						<td>
-							<?php
-							$table_total = count( $database_state['tables'] ?? array() );
-							$table_done  = min( (int) ( $database_state['table_index'] ?? 0 ), $table_total );
-							echo '<span id="sitevault-table-progress">' . esc_html( $table_done . ' / ' . $table_total ) . '</span>';
-							?>
-						</td>
-					</tr>
-					<tr>
-						<th>Rows Exported</th>
-						<td id="sitevault-rows-exported"><?php echo esc_html( number_format_i18n( (int) ( $database_state['rows_exported'] ?? 0 ) ) ); ?></td>
-					</tr>
-					<?php if ( 'failed' === ( $database_state['status'] ?? '' ) ) : ?>
-						<tr>
-							<th>Error</th>
-							<td><?php echo esc_html( $database_state['error'] ?? 'Unknown database export error.' ); ?></td>
-						</tr>
-					<?php endif; ?>
-				<?php endif; ?>
-			</tbody>
-		</table>
-
-		<?php if ( $database_state && 'running' === ( $database_state['status'] ?? '' ) ) : ?>
-			<div id="sitevault-auto-progress" style="margin-top:16px">
-				<p><strong>Database export is processing automatically.</strong></p>
-				<p class="description">SiteVault is running one bounded request at a time to avoid PHP timeout and memory-limit failures.</p>
+		<div class="sitevault-card">
+			<div class="sitevault-progress-head">
+				<div>
+					<div class="sitevault-progress-title" id="sitevault-current-stage"><?php echo esc_html( $current_stage ); ?></div>
+					<div class="sitevault-help">Backup ID: <code><?php echo esc_html( $active_backup_id ); ?></code></div>
+				</div>
+				<div class="sitevault-progress-value" id="sitevault-progress-value">
+					<?php echo 'indeterminate' === $progress_mode ? 'Working…' : esc_html( $overall_progress . '%' ); ?>
+				</div>
 			</div>
 
-			<noscript>
-				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
-					<input type="hidden" name="action" value="sitevault_continue_database_export">
-					<?php wp_nonce_field( 'sitevault_continue_database_export' ); ?>
-					<?php submit_button( 'Process Next Database Batch', 'primary', 'submit', false ); ?>
-				</form>
-			</noscript>
+			<div id="sitevault-progress-track" class="sitevault-progress-track <?php echo 'indeterminate' === $progress_mode ? 'is-indeterminate' : ''; ?>" aria-label="Backup progress">
+				<div id="sitevault-progress-bar" class="sitevault-progress-bar" style="width:<?php echo esc_attr( $overall_progress ); ?>%"></div>
+			</div>
 
+			<div class="sitevault-stage-grid">
+				<div id="sitevault-stage-db" class="sitevault-stage is-<?php echo esc_attr( $db_stage_state ); ?>">
+					<span class="sitevault-stage-name">1. Database</span>
+					<span class="sitevault-stage-state"><?php echo esc_html( $db_stage_state ); ?></span>
+				</div>
+				<div id="sitevault-stage-scan" class="sitevault-stage is-<?php echo esc_attr( $scan_stage_state ); ?>">
+					<span class="sitevault-stage-name">2. File Scan</span>
+					<span class="sitevault-stage-state"><?php echo esc_html( $scan_stage_state ); ?></span>
+				</div>
+				<div id="sitevault-stage-archive" class="sitevault-stage is-<?php echo esc_attr( $archive_stage_state ); ?>">
+					<span class="sitevault-stage-name">3. Archive</span>
+					<span class="sitevault-stage-state"><?php echo esc_html( $archive_stage_state ); ?></span>
+				</div>
+				<div id="sitevault-stage-verify" class="sitevault-stage is-<?php echo esc_attr( $verify_stage_state ); ?>">
+					<span class="sitevault-stage-name">4. Verify</span>
+					<span class="sitevault-stage-state"><?php echo esc_html( $verify_stage_state ); ?></span>
+				</div>
+			</div>
+
+			<div id="sitevault-running-banner" class="sitevault-status-banner <?php echo $backup_done ? 'is-complete' : ( $legacy_db_only ? 'is-warning' : 'is-running' ); ?>">
+				<span class="sitevault-status-dot"></span>
+				<div>
+					<strong id="sitevault-running-title">
+						<?php
+						if ( $backup_done ) {
+							echo 'Backup complete — you may leave this page.';
+						} elseif ( $legacy_db_only ) {
+							echo 'This is an older database-only backup.';
+						} else {
+							echo 'Backup is still running — keep this page open.';
+						}
+						?>
+					</strong>
+					<p id="sitevault-running-copy">
+						<?php
+						if ( $backup_done ) {
+							echo 'Database, wp-content archive and integrity checks have finished.';
+						} elseif ( $legacy_db_only ) {
+							echo 'Start a fresh backup to run the full database + wp-content pipeline.';
+						} else {
+							echo 'You can use another browser tab, but leaving or closing this SiteVault tab pauses processing safely. Returning to this page resumes from the last saved batch.';
+						}
+						?>
+					</p>
+				</div>
+			</div>
+		</div>
+
+		<div class="sitevault-card">
+			<h2>Live Backup Details</h2>
+			<div class="sitevault-metrics">
+				<div class="sitevault-metric">
+					<span class="sitevault-metric-label">Database tables</span>
+					<span class="sitevault-metric-value" id="sitevault-table-progress"><?php echo esc_html( $table_done . ' / ' . $table_total ); ?></span>
+				</div>
+				<div class="sitevault-metric">
+					<span class="sitevault-metric-label">Database rows</span>
+					<span class="sitevault-metric-value" id="sitevault-rows-exported"><?php echo esc_html( number_format_i18n( (int) ( $database_state['rows_exported'] ?? 0 ) ) ); ?></span>
+				</div>
+				<div class="sitevault-metric">
+					<span class="sitevault-metric-label">Files discovered</span>
+					<span class="sitevault-metric-value" id="sitevault-files-discovered"><?php echo esc_html( number_format_i18n( $files_found ) ); ?></span>
+				</div>
+				<div class="sitevault-metric">
+					<span class="sitevault-metric-label">Files archived</span>
+					<span class="sitevault-metric-value" id="sitevault-files-archived"><?php echo esc_html( number_format_i18n( $files_archived ) ); ?></span>
+				</div>
+			</div>
+
+			<table class="sitevault-detail-table">
+				<tbody>
+					<tr>
+						<th>Database status</th>
+						<td><span id="sitevault-db-status" class="sitevault-badge is-<?php echo esc_attr( $db_stage_state ); ?>"><?php echo esc_html( $db_status ?: 'pending' ); ?></span></td>
+					</tr>
+					<tr>
+						<th>wp-content status</th>
+						<td><span id="sitevault-content-status" class="sitevault-badge is-<?php echo esc_attr( $content_status ?: 'pending' ); ?>"><?php echo esc_html( $content_status ?: 'pending' ); ?></span></td>
+					</tr>
+					<tr>
+						<th>wp-content phase</th>
+						<td id="sitevault-content-phase"><?php echo esc_html( $content_phase ); ?></td>
+					</tr>
+					<tr>
+						<th>Directories scanned</th>
+						<td id="sitevault-directories-scanned"><?php echo esc_html( number_format_i18n( (int) ( $content_state['directories_scanned'] ?? 0 ) ) ); ?></td>
+					</tr>
+					<tr>
+						<th>Data archived</th>
+						<td id="sitevault-bytes-archived"><?php echo esc_html( size_format( (int) ( $content_state['bytes_archived'] ?? 0 ), 2 ) ); ?></td>
+					</tr>
+					<tr>
+						<th>Files skipped</th>
+						<td id="sitevault-files-skipped"><?php echo esc_html( number_format_i18n( (int) ( $content_state['files_skipped'] ?? 0 ) ) ); ?></td>
+					</tr>
+					<tr>
+						<th>Archive verification</th>
+						<td id="sitevault-archive-verification"><?php echo $archive_verified ? 'Passed' : 'Pending'; ?></td>
+					</tr>
+					<tr>
+						<th>Archive entries</th>
+						<td id="sitevault-archive-entries"><?php echo esc_html( number_format_i18n( (int) ( $content_state['archive_entries'] ?? 0 ) ) ); ?></td>
+					</tr>
+					<tr>
+						<th>SiteVault runtime excluded</th>
+						<td id="sitevault-runtime-excluded"><?php echo ! empty( $content_state['self_backup_excluded'] ) ? 'Yes' : 'Pending'; ?></td>
+					</tr>
+				</tbody>
+			</table>
+
+			<div class="sitevault-actions">
+				<form id="sitevault-new-backup-form" class="<?php echo ( $backup_done || $legacy_db_only ) ? '' : 'sitevault-hidden'; ?>" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="sitevault_start_backup">
+					<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
+					<?php submit_button( 'Start Another Test Backup', 'secondary', 'submit', false ); ?>
+				</form>
+			</div>
+		</div>
+
+		<?php if ( ! $backup_done && ! $legacy_db_only && 'failed' !== $db_status && 'failed' !== $content_status ) : ?>
 			<script>
 			(function() {
-				const statusEl = document.getElementById('sitevault-db-status');
-				const tableEl  = document.getElementById('sitevault-table-progress');
-				const rowsEl   = document.getElementById('sitevault-rows-exported');
-				const box      = document.getElementById('sitevault-auto-progress');
-				let stopped    = false;
+				const dbStatusEl       = document.getElementById('sitevault-db-status');
+				const contentStatus    = document.getElementById('sitevault-content-status');
+				const contentPhase     = document.getElementById('sitevault-content-phase');
+				const tableEl          = document.getElementById('sitevault-table-progress');
+				const rowsEl           = document.getElementById('sitevault-rows-exported');
+				const dirsEl           = document.getElementById('sitevault-directories-scanned');
+				const discoveredEl     = document.getElementById('sitevault-files-discovered');
+				const archivedEl       = document.getElementById('sitevault-files-archived');
+				const bytesEl          = document.getElementById('sitevault-bytes-archived');
+				const skippedEl        = document.getElementById('sitevault-files-skipped');
+				const verifyEl         = document.getElementById('sitevault-archive-verification');
+				const entriesEl        = document.getElementById('sitevault-archive-entries');
+				const runtimeEl        = document.getElementById('sitevault-runtime-excluded');
+				const progressTrack    = document.getElementById('sitevault-progress-track');
+				const progressBar      = document.getElementById('sitevault-progress-bar');
+				const progressValue    = document.getElementById('sitevault-progress-value');
+				const currentStage     = document.getElementById('sitevault-current-stage');
+				const banner           = document.getElementById('sitevault-running-banner');
+				const bannerTitle      = document.getElementById('sitevault-running-title');
+				const bannerCopy       = document.getElementById('sitevault-running-copy');
+				const newBackupForm    = document.getElementById('sitevault-new-backup-form');
+				let stopped            = false;
 
-				async function runBatch() {
-					if (stopped) {
-						return;
+				function humanBytes(bytes) {
+					const value = Number(bytes || 0);
+					if (value < 1024) return value + ' B';
+					const units = ['KB', 'MB', 'GB', 'TB'];
+					let size = value;
+					let index = -1;
+					do {
+						size /= 1024;
+						index++;
+					} while (size >= 1024 && index < units.length - 1);
+					return size.toFixed(2) + ' ' + units[index];
+				}
+
+				function setStage(id, state) {
+					const el = document.getElementById(id);
+					if (!el) return;
+					el.classList.remove('is-pending', 'is-running', 'is-complete', 'is-failed');
+					el.classList.add('is-' + state);
+					const stateEl = el.querySelector('.sitevault-stage-state');
+					if (stateEl) stateEl.textContent = state;
+				}
+
+				function setBadge(el, state) {
+					if (!el) return;
+					el.classList.remove('is-pending', 'is-running', 'is-complete', 'is-failed');
+					el.classList.add('is-' + state);
+					el.textContent = state;
+				}
+
+				function setProgress(percent, label, indeterminate) {
+					currentStage.textContent = label;
+					progressTrack.classList.toggle('is-indeterminate', !!indeterminate);
+					if (indeterminate) {
+						progressValue.textContent = 'Working…';
+					} else {
+						const safe = Math.max(0, Math.min(100, Math.round(percent)));
+						progressBar.style.width = safe + '%';
+						progressValue.textContent = safe + '%';
 					}
+				}
 
+				function setRunningBanner(title, copy, mode) {
+					banner.classList.remove('is-running', 'is-complete', 'is-warning', 'is-error');
+					banner.classList.add('is-' + mode);
+					bannerTitle.textContent = title;
+					bannerCopy.textContent = copy;
+				}
+
+				function stopWithError(message) {
+					stopped = true;
+					setRunningBanner('SiteVault processing stopped.', message || 'Unknown SiteVault error.', 'error');
+				}
+
+				async function postBatch(action, nonce) {
 					const body = new URLSearchParams();
-					body.set('action', 'sitevault_process_database_batch');
-					body.set('nonce', '<?php echo esc_js( wp_create_nonce( 'sitevault_process_database_batch' ) ); ?>');
+					body.set('action', action);
+					body.set('nonce', nonce);
+
+					const response = await fetch(ajaxurl, {
+						method: 'POST',
+						credentials: 'same-origin',
+						headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+						body: body.toString()
+					});
+
+					return response.json();
+				}
+
+				async function runContentBatch() {
+					if (stopped) return;
 
 					try {
-						const response = await fetch(ajaxurl, {
-							method: 'POST',
-							credentials: 'same-origin',
-							headers: {
-								'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-							},
-							body: body.toString()
-						});
-
-						const payload = await response.json();
+						const payload = await postBatch(
+							'sitevault_process_content_batch',
+							'<?php echo esc_js( wp_create_nonce( 'sitevault_process_content_batch' ) ); ?>'
+						);
 
 						if (!payload.success) {
-							stopped = true;
-							statusEl.textContent = 'failed';
-							box.innerHTML = '<p><strong>Database export stopped.</strong></p><p>' +
-								(payload.data && payload.data.message ? payload.data.message : 'Unknown SiteVault error.') +
-								'</p>';
+							setBadge(contentStatus, 'failed');
+							setStage('sitevault-stage-scan', 'failed');
+							setStage('sitevault-stage-archive', 'failed');
+							stopWithError(payload.data && payload.data.message ? payload.data.message : 'wp-content backup failed.');
 							return;
 						}
 
 						const data = payload.data || {};
-						statusEl.textContent = data.status || 'running';
-						tableEl.textContent  = (data.table_done || 0) + ' / ' + (data.table_total || 0);
-						rowsEl.textContent   = Number(data.rows_exported || 0).toLocaleString();
+						setBadge(contentStatus, data.status || 'running');
+						contentPhase.textContent = data.phase || 'scanning';
+						dirsEl.textContent = Number(data.directories_scanned || 0).toLocaleString();
+						discoveredEl.textContent = Number(data.files_discovered || 0).toLocaleString();
+						archivedEl.textContent = Number(data.files_archived || 0).toLocaleString();
+						bytesEl.textContent = humanBytes(data.bytes_archived || 0);
+						skippedEl.textContent = Number(data.files_skipped || 0).toLocaleString();
+
+						if (data.phase === 'scanning' && data.status !== 'complete') {
+							setStage('sitevault-stage-scan', 'running');
+							setStage('sitevault-stage-archive', 'pending');
+							setProgress(35, 'Scanning wp-content', true);
+						} else if (data.status !== 'complete') {
+							setStage('sitevault-stage-scan', 'complete');
+							setStage('sitevault-stage-archive', 'running');
+							const total = Number(data.files_discovered || 0);
+							const done = Number(data.files_archived || 0);
+							const ratio = total > 0 ? Math.min(1, done / total) : 0;
+							setProgress(40 + (55 * ratio), 'Archiving wp-content', false);
+						}
 
 						if (data.status === 'complete') {
 							stopped = true;
-							box.innerHTML = '<p><strong>Database dump created successfully.</strong></p>' +
-								'<p>The next M1 component is the wp-content file scanner/archive engine.</p>';
+							setStage('sitevault-stage-scan', 'complete');
+							setStage('sitevault-stage-archive', 'complete');
+							setStage('sitevault-stage-verify', data.archive_verified ? 'complete' : 'failed');
+							verifyEl.textContent = data.archive_verified ? 'Passed' : 'Failed';
+							entriesEl.textContent = Number(data.archive_entries || 0).toLocaleString();
+							runtimeEl.textContent = data.self_backup_excluded ? 'Yes' : 'No';
+							setProgress(100, 'Backup complete', false);
+							setRunningBanner(
+								'Backup complete — you may leave this page.',
+								'Database, wp-content archive and integrity verification have all finished.',
+								'complete'
+							);
+							newBackupForm.classList.remove('sitevault-hidden');
 							return;
 						}
 
-						window.setTimeout(runBatch, 250);
+						window.setTimeout(runContentBatch, 250);
 					} catch (error) {
-						stopped = true;
-						statusEl.textContent = 'paused';
-						box.innerHTML = '<p><strong>Automatic processing paused.</strong></p>' +
-							'<p>Reload this SiteVault page to resume the export safely.</p>';
+						stopWithError('Automatic wp-content processing paused. Reload this SiteVault page to resume safely.');
 					}
 				}
 
-				window.setTimeout(runBatch, 350);
+				async function runDatabaseBatch() {
+					if (stopped) return;
+
+					try {
+						const payload = await postBatch(
+							'sitevault_process_database_batch',
+							'<?php echo esc_js( wp_create_nonce( 'sitevault_process_database_batch' ) ); ?>'
+						);
+
+						if (!payload.success) {
+							setBadge(dbStatusEl, 'failed');
+							setStage('sitevault-stage-db', 'failed');
+							stopWithError(payload.data && payload.data.message ? payload.data.message : 'Database export failed.');
+							return;
+						}
+
+						const data = payload.data || {};
+						setBadge(dbStatusEl, data.status || 'running');
+						tableEl.textContent = (data.table_done || 0) + ' / ' + (data.table_total || 0);
+						rowsEl.textContent = Number(data.rows_exported || 0).toLocaleString();
+
+						const total = Number(data.table_total || 0);
+						const done = Number(data.table_done || 0);
+						const ratio = total > 0 ? Math.min(1, done / total) : 0;
+						setProgress(30 * ratio, 'Exporting database', false);
+
+						if (data.status === 'complete') {
+							setStage('sitevault-stage-db', 'complete');
+							setStage('sitevault-stage-scan', 'running');
+							setProgress(35, 'Scanning wp-content', true);
+							window.setTimeout(runContentBatch, 250);
+							return;
+						}
+
+						window.setTimeout(runDatabaseBatch, 250);
+					} catch (error) {
+						stopWithError('Automatic database processing paused. Reload this SiteVault page to resume safely.');
+					}
+				}
+
+				<?php if ( 'running' === $db_status ) : ?>
+					window.setTimeout(runDatabaseBatch, 350);
+				<?php elseif ( 'complete' === $db_status && 'running' === $content_status ) : ?>
+					window.setTimeout(runContentBatch, 350);
+				<?php endif; ?>
 			})();
 			</script>
-		<?php elseif ( $database_state && 'complete' === ( $database_state['status'] ?? '' ) ) : ?>
-			<p><strong>Database dump created successfully.</strong> The next M1 component is the wp-content file scanner/archive engine.</p>
-			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
-				<input type="hidden" name="action" value="sitevault_start_backup">
-				<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
-				<?php submit_button( 'Start Another Test Backup', 'secondary', 'submit', false ); ?>
-			</form>
 		<?php endif; ?>
 	<?php endif; ?>
 </div>

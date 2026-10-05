@@ -13,12 +13,13 @@ Tasks:
 - [x] Runtime storage foundation
 - [x] Initial manifest generator
 - [x] Resumable database exporter foundation
-- [ ] File inventory/scanner
-- [ ] wp-content archive engine
+- [x] Resumable file inventory/scanner foundation
+- [x] Resumable wp-content ZIP archive foundation
 - [ ] SHA-256 checksums
 - [ ] Package builder
 - [ ] Backup history
-- [x] Manual database backup test workflow
+- [x] Automatic chained database backup workflow
+- [ ] Runtime validation of wp-content scanner/archive
 - [ ] Full Admin Create Backup workflow
 - [ ] Progress/status endpoint
 - [ ] Error and operation logging
