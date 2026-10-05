@@ -169,6 +169,16 @@ final class SiteVault_Database_Stager {
 				return $this->fail( $state, 'Database staging encountered an unexpected live/source table identifier.' );
 			}
 
+			$executable = ltrim( $transformed );
+
+			if (
+				! preg_match( '/^CREATE\s+TABLE\b/i', $executable ) &&
+				! preg_match( '/^INSERT\s+INTO\b/i', $executable )
+			) {
+				fclose( $handle );
+				return $this->fail( $state, 'Unexpected SQL statement type was blocked during database staging.' );
+			}
+
 			$query_result = $wpdb->query( $transformed );
 
 			if ( false === $query_result ) {
@@ -632,6 +642,18 @@ final class SiteVault_Database_Stager {
 	private function transform_value( string $value, array $pairs, int $depth ): array {
 		if ( $depth > 12 ) {
 			return $this->error( 'Serialized migration data exceeded the safe recursion depth.' );
+		}
+
+		$needs_change = false;
+		foreach ( array_keys( $pairs ) as $needle ) {
+			if ( '' !== $needle && false !== strpos( $value, $needle ) ) {
+				$needs_change = true;
+				break;
+			}
+		}
+
+		if ( ! $needs_change ) {
+			return array( 'success' => true, 'value' => $value, 'replacements' => 0 );
 		}
 
 		if ( is_serialized( $value ) ) {
