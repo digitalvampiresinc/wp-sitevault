@@ -40,6 +40,7 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-restore-workspace.php';
 		require_once SITEVAULT_PATH . 'includes/class-restore-planner.php';
 		require_once SITEVAULT_PATH . 'includes/class-restore-safety-manager.php';
+		require_once SITEVAULT_PATH . 'includes/class-database-stager.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}

@@ -30,9 +30,9 @@ Tasks:
 - [x] Package validation foundation
 - [x] Safe outer-package extraction workspace
 - [x] Restore compatibility plan foundation
-- [ ] Database importer
+- [x] Shadow database importer foundation
 - [ ] URL/path replacement
-- [ ] Serialized-data-safe migration
+- [x] Serialized-safe migration staging foundation
 - [x] Mandatory pre-restore snapshot foundation
 - [x] Controlled restore staging seal foundation
 - [ ] Same-domain restore
@@ -60,3 +60,5 @@ Tasks:
 - Selective restore
 - Encryption
 - Standalone recovery loader
+
+- [ ] Live database promotion/swap
