@@ -1,0 +1,16 @@
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+vendor/
+node_modules/
+*.log
+*.zip
+*.tar
+*.tar.gz
+*.sitevault
+.phpunit.result.cache
+
+storage/backups/
+storage/tmp/
+storage/logs/
