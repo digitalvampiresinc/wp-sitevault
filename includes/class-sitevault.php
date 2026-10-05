@@ -30,6 +30,9 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-backup-manifest.php';
 		require_once SITEVAULT_PATH . 'includes/class-database-exporter.php';
 		require_once SITEVAULT_PATH . 'includes/class-content-archiver.php';
+		require_once SITEVAULT_PATH . 'includes/class-checksum-manager.php';
+		require_once SITEVAULT_PATH . 'includes/class-package-builder.php';
+		require_once SITEVAULT_PATH . 'includes/class-backup-history.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}
