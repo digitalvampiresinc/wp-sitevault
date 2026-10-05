@@ -38,6 +38,9 @@ final class SiteVault_Content_Archiver {
 			'files_archived'     => 0,
 			'bytes_archived'     => 0,
 			'files_skipped'      => 0,
+			'archive_verified'   => false,
+			'archive_entries'    => 0,
+			'self_backup_excluded'=> true,
 			'inventory_offset'   => 0,
 			'inventory_file'     => $inventory_file,
 			'archive_file'       => $archive_file,
@@ -289,9 +292,22 @@ final class SiteVault_Content_Archiver {
 		$state['updated_at'] = gmdate( 'c' );
 
 		if ( $reached_eof ) {
-			$state['phase']        = 'complete';
-			$state['status']       = 'complete';
-			$state['completed_at'] = gmdate( 'c' );
+			$verification = $this->verify_archive( $state );
+
+			if ( ! $verification['success'] ) {
+				return $this->fail_state(
+					$state_file,
+					$state,
+					$verification['message'] ?? 'wp-content archive verification failed.'
+				);
+			}
+
+			$state['archive_verified']    = true;
+			$state['archive_entries']     = (int) $verification['entries'];
+			$state['self_backup_excluded']= (bool) $verification['self_backup_excluded'];
+			$state['phase']               = 'complete';
+			$state['status']              = 'complete';
+			$state['completed_at']        = gmdate( 'c' );
 		}
 
 		if ( ! $this->save_state( $state_file, $state ) ) {
@@ -299,6 +315,74 @@ final class SiteVault_Content_Archiver {
 		}
 
 		return array( 'success' => true, 'state' => $state );
+	}
+
+	private function verify_archive( array $state ): array {
+		if ( empty( $state['archive_file'] ) || ! is_readable( $state['archive_file'] ) ) {
+			return array(
+				'success' => false,
+				'message' => 'Completed wp-content archive is not readable.',
+			);
+		}
+
+		$zip = new ZipArchive();
+		$open_result = $zip->open( $state['archive_file'] );
+
+		if ( true !== $open_result ) {
+			return array(
+				'success' => false,
+				'message' => 'Unable to reopen completed wp-content archive for verification. Code: ' . (int) $open_result,
+			);
+		}
+
+		$entries = (int) $zip->numFiles;
+		$self_backup_excluded = true;
+
+		for ( $i = 0; $i < $entries; $i++ ) {
+			$name = $zip->getNameIndex( $i );
+
+			if ( false === $name ) {
+				continue;
+			}
+
+			$normalized = ltrim( wp_normalize_path( $name ), '/' );
+
+			if ( 'wp-content/sitevault' === $normalized || 0 === strpos( $normalized, 'wp-content/sitevault/' ) ) {
+				$self_backup_excluded = false;
+				break;
+			}
+		}
+
+		$zip->close();
+
+		if ( ! $self_backup_excluded ) {
+			return array(
+				'success' => false,
+				'message' => 'Archive verification found SiteVault runtime backup data inside wp-content.zip.',
+			);
+		}
+
+		if ( $entries !== (int) ( $state['files_archived'] ?? 0 ) ) {
+			return array(
+				'success' => false,
+				'message' => 'Archive entry count does not match the number of files reported as archived.',
+			);
+		}
+
+		$expected = (int) ( $state['files_discovered'] ?? 0 ) - (int) ( $state['files_skipped'] ?? 0 );
+
+		if ( $entries !== $expected ) {
+			return array(
+				'success' => false,
+				'message' => 'Archive entry count does not match the expected inventory total.',
+			);
+		}
+
+		return array(
+			'success'              => true,
+			'entries'              => $entries,
+			'self_backup_excluded' => true,
+		);
 	}
 
 	private function load_state( string $state_file ): ?array {
