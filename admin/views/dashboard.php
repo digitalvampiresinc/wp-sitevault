@@ -225,21 +225,19 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 			</table>
 
 			<div class="sitevault-actions">
-				<?php if ( $backup_done ) : ?>
-					<?php
-					$download_url = wp_nonce_url(
-						add_query_arg(
-							array(
-								'action'    => 'sitevault_download_backup',
-								'backup_id' => $active_backup_id,
-							),
-							admin_url( 'admin-post.php' )
+				<?php
+				$download_url = wp_nonce_url(
+					add_query_arg(
+						array(
+							'action'    => 'sitevault_download_backup',
+							'backup_id' => $active_backup_id,
 						),
-						'sitevault_download_backup_' . $active_backup_id
-					);
-					?>
-					<a id="sitevault-download-current" class="button button-primary" href="<?php echo esc_url( $download_url ); ?>">Download .sitevault</a>
-				<?php endif; ?>
+						admin_url( 'admin-post.php' )
+					),
+					'sitevault_download_backup_' . $active_backup_id
+				);
+				?>
+				<a id="sitevault-download-current" class="button button-primary <?php echo $backup_done ? '' : 'sitevault-hidden'; ?>" href="<?php echo esc_url( $download_url ); ?>">Download .sitevault</a>
 
 				<form id="sitevault-new-backup-form" class="<?php echo ( $backup_done || $legacy_db_only ) ? '' : 'sitevault-hidden'; ?>" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="sitevault_start_backup">
@@ -276,6 +274,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 				const bannerTitle      = document.getElementById('sitevault-running-title');
 				const bannerCopy       = document.getElementById('sitevault-running-copy');
 				const newBackupForm    = document.getElementById('sitevault-new-backup-form');
+				const downloadCurrent  = document.getElementById('sitevault-download-current');
 				let stopped            = false;
 
 				function humanBytes(bytes) {
@@ -382,6 +381,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 							'complete'
 						);
 						newBackupForm.classList.remove('sitevault-hidden');
+						if (downloadCurrent) downloadCurrent.classList.remove('sitevault-hidden');
 					} catch (error) {
 						setStage('sitevault-stage-package', 'failed');
 						stopWithError('Package creation paused or failed. Reload this SiteVault page to retry safely.');
@@ -528,7 +528,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					<tbody>
 						<?php foreach ( $backup_history as $item ) : ?>
 							<tr>
-								<td><?php echo esc_html( $item['created_at'] ? get_date_from_gmt( $item['created_at'], 'Y-m-d H:i:s' ) : '—' ); ?></td>
+								<td><?php echo esc_html( $item['created_at'] ? wp_date( 'Y-m-d H:i:s', strtotime( (string) $item['created_at'] ) ) : '—' ); ?></td>
 								<td><code><?php echo esc_html( $item['backup_id'] ); ?></code></td>
 								<td><?php echo esc_html( 'needs_package' === $item['package_status'] ? 'Ready to package' : ucfirst( (string) $item['package_status'] ) ); ?></td>
 								<td><?php echo null !== $item['package_size'] ? esc_html( size_format( (int) $item['package_size'], 2 ) ) : '—'; ?></td>
