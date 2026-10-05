@@ -180,6 +180,132 @@ final class SiteVault_Cutover_Manager {
 		}
 	}
 
+	public function execute_manual_rollback(): array {
+		$transaction = $this->get_latest_state();
+
+		if ( empty( $transaction ) || 'completed' !== ( $transaction['status'] ?? '' ) ) {
+			return $this->error( 'Manual rollback is available only for a completed SiteVault cutover.' );
+		}
+
+		if ( empty( $transaction['rollback_available'] ) ) {
+			return $this->error( 'Fast rollback material is not marked as available for this transaction.' );
+		}
+
+		$preflight = $this->manual_rollback_preflight( $transaction );
+
+		if ( ! $preflight['success'] ) {
+			return $preflight;
+		}
+
+		$manifest = $preflight['manifest'];
+		$manual_preserve = WP_CONTENT_DIR . '/sitevault/cutover/' . sanitize_key( (string) $transaction['plan_id'] ) . '/manual-rollback-preserved-plugin';
+		$current_plugin = $this->preserve_current_plugin( $manual_preserve );
+
+		if ( ! $current_plugin['success'] ) {
+			return $current_plugin;
+		}
+
+		$original_plugin_stats = $this->directory_stats(
+			trailingslashit( (string) $transaction['rollback_root'] ) . 'plugins/wp-sitevault'
+		);
+
+		$transaction['manual_rollback'] = array(
+			'status'                => 'running',
+			'stage'                 => 'preflight',
+			'started_at'            => gmdate( 'c' ),
+			'updated_at'            => gmdate( 'c' ),
+			'completed_at'          => null,
+			'safety_manifest_rows'  => (int) ( $manifest['payload']['database']['rows_exported'] ?? 0 ),
+			'safety_manifest_tables'=> (int) ( $manifest['payload']['database']['tables'] ?? 0 ),
+			'safety_manifest_files' => (int) ( $manifest['payload']['wp_content']['files_archived'] ?? 0 ),
+			'safety_manifest_bytes' => (int) ( $manifest['payload']['wp_content']['bytes_archived'] ?? 0 ),
+			'plugin_files_excluded' => (int) ( $original_plugin_stats['files'] ?? 0 ),
+			'plugin_bytes_excluded' => (int) ( $original_plugin_stats['bytes'] ?? 0 ),
+			'verification'          => array(),
+			'error'                 => null,
+		);
+
+		$this->checkpoint( $transaction );
+
+		try {
+			$this->enter_maintenance_lock( $transaction );
+			$transaction['maintenance_lock'] = true;
+			$transaction['manual_rollback']['stage'] = 'filesystem';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$fs = $this->rollback_filesystem( $transaction );
+
+			if ( ! $fs['success'] ) {
+				throw new RuntimeException( $fs['message'] );
+			}
+
+			$plugin_restore = $this->restore_preserved_plugin( $manual_preserve );
+
+			if ( ! $plugin_restore['success'] ) {
+				throw new RuntimeException( $plugin_restore['message'] );
+			}
+
+			$transaction['manual_rollback']['stage'] = 'database';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$db = $this->rollback_database(
+				$transaction['database_rollback_map'] ?? array(),
+				$transaction['database_promotion_map'] ?? array()
+			);
+
+			if ( ! $db['success'] ) {
+				throw new RuntimeException( $db['message'] );
+			}
+
+			$transaction['manual_rollback']['stage'] = 'verification';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$verify = $this->verify_manual_rollback(
+				$transaction,
+				$manifest,
+				$original_plugin_stats
+			);
+
+			if ( ! $verify['success'] ) {
+				throw new RuntimeException( $verify['message'] );
+			}
+
+			$transaction['manual_rollback']['verification'] = $verify;
+			$transaction['manual_rollback']['status']       = 'completed';
+			$transaction['manual_rollback']['stage']        = 'complete';
+			$transaction['manual_rollback']['completed_at'] = gmdate( 'c' );
+			$transaction['manual_rollback']['updated_at']   = gmdate( 'c' );
+			$transaction['status']                          = 'manually_rolled_back';
+			$transaction['stage']                           = 'manual_rollback_complete';
+			$transaction['rollback_available']              = false;
+			$transaction['updated_at']                      = gmdate( 'c' );
+
+			$this->leave_maintenance_lock();
+			$transaction['maintenance_lock'] = false;
+			$this->checkpoint( $transaction );
+
+			return array( 'success' => true, 'state' => $transaction );
+		} catch ( Throwable $e ) {
+			$transaction['manual_rollback']['status']     = 'failed';
+			$transaction['manual_rollback']['stage']      = 'manual_recovery_required';
+			$transaction['manual_rollback']['error']      = $e->getMessage();
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$transaction['status']                        = 'manual_rollback_failed';
+			$transaction['stage']                         = 'manual_recovery_required';
+			$transaction['updated_at']                    = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			return array(
+				'success' => false,
+				'message' => 'Manual rollback did not complete safely. The SiteVault transaction journal and safety package were retained. ' . $e->getMessage(),
+				'state'   => $transaction,
+			);
+		}
+	}
+
 	public function get_latest_state(): array {
 		$root = WP_CONTENT_DIR . '/sitevault/cutover';
 
@@ -668,6 +794,159 @@ final class SiteVault_Cutover_Manager {
 		}
 
 		return array( 'success' => true, 'message' => 'Filesystem rollback completed.' );
+	}
+
+	private function manual_rollback_preflight( array $transaction ): array {
+		global $wpdb;
+
+		if ( empty( $transaction['database_rollback_map'] ) || empty( $transaction['database_promotion_map'] ) ) {
+			return $this->error( 'Database rollback map is missing from the completed transaction journal.' );
+		}
+
+		$rollback_root = (string) ( $transaction['rollback_root'] ?? '' );
+
+		if ( '' === $rollback_root || ! is_dir( $rollback_root ) ) {
+			return $this->error( 'Original target wp-content rollback directory is missing.' );
+		}
+
+		foreach ( $transaction['database_rollback_map'] as $live => $backup ) {
+			$exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $backup ) )
+			);
+
+			if ( (string) $exists !== (string) $backup ) {
+				return $this->error( 'Original target rollback table is missing: ' . $backup );
+			}
+		}
+
+		foreach ( $transaction['database_promotion_map'] as $shadow => $live ) {
+			$exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
+			);
+
+			if ( (string) $exists !== (string) $live ) {
+				return $this->error( 'Current restored live table is missing: ' . $live );
+			}
+		}
+
+		$manifest = $this->load_safety_manifest( (string) ( $transaction['safety_snapshot_id'] ?? '' ) );
+
+		if ( ! $manifest['success'] ) {
+			return $manifest;
+		}
+
+		return array(
+			'success'  => true,
+			'manifest' => $manifest['manifest'],
+		);
+	}
+
+	private function load_safety_manifest( string $backup_id ): array {
+		$backup_id = sanitize_key( $backup_id );
+
+		if ( '' === $backup_id ) {
+			return $this->error( 'Safety snapshot ID is missing from the transaction journal.' );
+		}
+
+		$file = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id . '/manifest.json';
+
+		if ( ! is_readable( $file ) ) {
+			return $this->error( 'Pre-restore safety manifest is unavailable.' );
+		}
+
+		$manifest = json_decode( (string) file_get_contents( $file ), true );
+
+		if ( ! is_array( $manifest ) || ( $manifest['backup_id'] ?? '' ) !== $backup_id ) {
+			return $this->error( 'Pre-restore safety manifest is invalid.' );
+		}
+
+		return array( 'success' => true, 'manifest' => $manifest );
+	}
+
+	private function verify_manual_rollback( array $transaction, array $manifest, array $original_plugin_stats ): array {
+		global $wpdb;
+
+		$rollback_map = is_array( $transaction['database_rollback_map'] ?? null )
+			? $transaction['database_rollback_map']
+			: array();
+
+		$tables = 0;
+		$rows   = 0;
+
+		foreach ( array_keys( $rollback_map ) as $live ) {
+			$exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
+			);
+
+			if ( (string) $exists !== (string) $live ) {
+				return $this->error( 'Rolled-back target table is missing: ' . $live );
+			}
+
+			$count = $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->quote_identifier( (string) $live ) );
+
+			if ( null === $count ) {
+				return $this->error( 'Unable to count rows in rolled-back target table: ' . $live );
+			}
+
+			$tables++;
+			$rows += (int) $count;
+		}
+
+		$expected_tables = (int) ( $manifest['payload']['database']['tables'] ?? 0 );
+		$expected_rows   = (int) ( $manifest['payload']['database']['rows_exported'] ?? 0 );
+
+		if ( $tables !== $expected_tables || $rows !== $expected_rows ) {
+			return $this->error(
+				'Rolled-back database does not match the pre-restore safety snapshot. Expected ' .
+				$expected_tables . ' tables / ' . $expected_rows . ' rows, found ' .
+				$tables . ' tables / ' . $rows . ' rows.'
+			);
+		}
+
+		$stats = $this->managed_live_content_stats();
+		$expected_files = max(
+			0,
+			(int) ( $manifest['payload']['wp_content']['files_archived'] ?? 0 ) -
+			(int) ( $original_plugin_stats['files'] ?? 0 )
+		);
+		$expected_bytes = max(
+			0,
+			(int) ( $manifest['payload']['wp_content']['bytes_archived'] ?? 0 ) -
+			(int) ( $original_plugin_stats['bytes'] ?? 0 )
+		);
+
+		if ( $stats['files'] !== $expected_files || $stats['bytes'] !== $expected_bytes ) {
+			return $this->error(
+				'Rolled-back wp-content does not match the pre-restore safety snapshot after excluding the preserved SiteVault plugin.'
+			);
+		}
+
+		return array(
+			'success'         => true,
+			'database_tables' => $tables,
+			'database_rows'   => $rows,
+			'managed_files'   => $stats['files'],
+			'managed_bytes'   => $stats['bytes'],
+			'sitevault_preserved' => true,
+		);
+	}
+
+	private function restore_preserved_plugin( string $preserved ): array {
+		$live = WP_CONTENT_DIR . '/plugins/wp-sitevault';
+
+		if ( file_exists( $live ) || is_link( $live ) ) {
+			$remove = $this->remove_tree( $live );
+
+			if ( ! $remove['success'] ) {
+				return $remove;
+			}
+		}
+
+		if ( ! is_dir( WP_CONTENT_DIR . '/plugins' ) && ! wp_mkdir_p( WP_CONTENT_DIR . '/plugins' ) ) {
+			return $this->error( 'Unable to recreate the live plugins directory during rollback.' );
+		}
+
+		return $this->copy_tree( $preserved, $live );
 	}
 
 	private function preserve_current_plugin( string $destination ): array {
