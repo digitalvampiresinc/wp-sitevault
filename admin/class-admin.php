@@ -22,6 +22,7 @@ final class SiteVault_Admin {
 		add_action( 'admin_menu', array( $this, 'register_menu' ) );
 		add_action( 'admin_post_sitevault_start_backup', array( $this, 'handle_start_backup' ) );
 		add_action( 'admin_post_sitevault_continue_database_export', array( $this, 'handle_continue_database_export' ) );
+		add_action( 'wp_ajax_sitevault_process_database_batch', array( $this, 'handle_ajax_database_batch' ) );
 	}
 
 	public function register_menu(): void {
@@ -73,6 +74,48 @@ final class SiteVault_Admin {
 		$this->redirect_with_message(
 			'complete' === $status ? 'complete' : 'progress',
 			'complete' === $status ? 'Database export completed.' : 'Database export batch completed.'
+		);
+	}
+
+	public function handle_ajax_database_batch(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'You are not allowed to perform this SiteVault operation.' ), 403 );
+		}
+
+		check_ajax_referer( 'sitevault_process_database_batch', 'nonce' );
+
+		$backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+
+		if ( '' === $backup_id ) {
+			wp_send_json_error( array( 'message' => 'No active backup was found.' ), 404 );
+		}
+
+		$backup_dir = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id;
+		$exporter   = new SiteVault_Database_Exporter();
+		$result     = $exporter->process_batch( $backup_dir );
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error(
+				array(
+					'message' => $result['message'] ?? 'Database export failed.',
+					'state'   => $result['state'] ?? null,
+				),
+				500
+			);
+		}
+
+		$state       = $result['state'];
+		$table_total = count( $state['tables'] ?? array() );
+		$table_done  = min( (int) ( $state['table_index'] ?? 0 ), $table_total );
+
+		wp_send_json_success(
+			array(
+				'status'        => $state['status'] ?? 'running',
+				'table_done'    => $table_done,
+				'table_total'   => $table_total,
+				'rows_exported' => (int) ( $state['rows_exported'] ?? 0 ),
+				'error'         => $state['error'] ?? null,
+			)
 		);
 	}
 
