@@ -27,8 +27,9 @@ final class SiteVault {
 	}
 
 	private function load_dependencies(): void {
-		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manifest.php';
+		require_once SITEVAULT_PATH . 'includes/class-database-exporter.php';
+		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}
 
