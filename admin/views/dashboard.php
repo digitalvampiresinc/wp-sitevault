@@ -11,6 +11,7 @@ $db_status      = $database_state['status'] ?? '';
 $content_status = $content_state['status'] ?? '';
 $content_phase  = $content_state['phase'] ?? 'scanning';
 $backup_done    = 'complete' === $db_status && 'complete' === $content_status;
+$legacy_db_only  = 'complete' === $db_status && empty( $content_state );
 ?>
 <div class="wrap">
 	<h1>SiteVault</h1>
@@ -94,7 +95,12 @@ $backup_done    = 'complete' === $db_status && 'complete' === $content_status;
 		</table>
 
 		<div id="sitevault-auto-progress" style="margin-top:16px">
-			<?php if ( $backup_done ) : ?>
+			<?php if ( $legacy_db_only ) : ?>
+				<div class="notice notice-info inline">
+					<p><strong>This active backup was created before the wp-content archive engine was added.</strong></p>
+					<p>Start a new test backup to run the full database + wp-content pipeline.</p>
+				</div>
+			<?php elseif ( $backup_done ) : ?>
 				<p><strong>Database and wp-content backup stages completed successfully.</strong></p>
 			<?php elseif ( 'running' === $db_status ) : ?>
 				<p><strong>Database export is processing automatically.</strong></p>
@@ -105,7 +111,7 @@ $backup_done    = 'complete' === $db_status && 'complete' === $content_status;
 			<?php endif; ?>
 		</div>
 
-		<?php if ( $backup_done ) : ?>
+		<?php if ( $backup_done || $legacy_db_only ) : ?>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
 				<input type="hidden" name="action" value="sitevault_start_backup">
 				<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
@@ -113,7 +119,7 @@ $backup_done    = 'complete' === $db_status && 'complete' === $content_status;
 			</form>
 		<?php endif; ?>
 
-		<?php if ( ! $backup_done && 'failed' !== $db_status && 'failed' !== $content_status ) : ?>
+		<?php if ( ! $backup_done && ! $legacy_db_only && 'failed' !== $db_status && 'failed' !== $content_status ) : ?>
 			<script>
 			(function() {
 				const dbStatusEl     = document.getElementById('sitevault-db-status');
