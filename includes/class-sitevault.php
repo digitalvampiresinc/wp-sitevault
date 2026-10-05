@@ -19,6 +19,8 @@ final class SiteVault {
 	private function __construct() {}
 
 	public function boot(): void {
+		self::ensure_runtime_directories();
+		self::protect_runtime_storage();
 		$this->load_dependencies();
 
 		if ( is_admin() ) {
@@ -40,6 +42,12 @@ final class SiteVault {
 	}
 
 	public static function activate(): void {
+		self::ensure_runtime_directories();
+		self::protect_runtime_storage();
+		update_option( 'sitevault_version', SITEVAULT_VERSION );
+	}
+
+	private static function ensure_runtime_directories(): void {
 		$paths = array(
 			WP_CONTENT_DIR . '/sitevault',
 			WP_CONTENT_DIR . '/sitevault/backups',
@@ -53,10 +61,6 @@ final class SiteVault {
 				wp_mkdir_p( $path );
 			}
 		}
-
-		self::protect_runtime_storage();
-
-		update_option( 'sitevault_version', SITEVAULT_VERSION );
 	}
 
 	private static function protect_runtime_storage(): void {
