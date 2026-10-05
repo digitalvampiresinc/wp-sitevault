@@ -660,12 +660,180 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					<?php endforeach; ?>
 				</ol>
 
-				<div class="sitevault-status-banner is-warning">
-					<span class="sitevault-status-dot"></span>
-					<div>
-						<strong>Restore execution is still locked.</strong>
-						<p>The next stage will add the mandatory pre-restore safety snapshot and controlled restore staging before any database or live file replacement can begin.</p>
-					</div>
+				<?php
+				$safety_matches_plan = ! empty( $restore_safety )
+					&& ( $restore_safety['plan_id'] ?? '' ) === ( $restore_plan['plan_id'] ?? '' );
+				$safety_complete = $safety_matches_plan
+					&& 'complete' === ( $restore_safety['status'] ?? '' )
+					&& 'safety_ready' === ( $restore_safety['staging']['status'] ?? '' );
+				$safety_running = $safety_matches_plan && 'running' === ( $restore_safety['status'] ?? '' );
+				?>
+
+				<div class="sitevault-card" style="margin-top:18px;background:#f9fbfd">
+					<h3 style="margin-top:0">Mandatory Pre-Restore Safety Snapshot</h3>
+					<p>Before SiteVault is allowed to restore this package, it must create and verify a fresh backup of the target site as it exists right now.</p>
+
+					<?php if ( $safety_complete ) : ?>
+						<div class="sitevault-status-banner is-complete">
+							<span class="sitevault-status-dot"></span>
+							<div>
+								<strong>Safety snapshot verified and restore staging sealed.</strong>
+								<p>The current target site is protected by a verified rollback package. Restore execution remains locked until the next M2 execution layer is installed.</p>
+							</div>
+						</div>
+						<table class="sitevault-detail-table">
+							<tbody>
+								<tr><th>Safety snapshot ID</th><td><code><?php echo esc_html( $restore_safety['snapshot_backup_id'] ?? '—' ); ?></code></td></tr>
+								<tr><th>Safety package</th><td><?php echo esc_html( $restore_safety['package']['package_name'] ?? '—' ); ?></td></tr>
+								<tr><th>Safety package size</th><td><?php echo ! empty( $restore_safety['package']['package_size'] ) ? esc_html( size_format( (int) $restore_safety['package']['package_size'], 2 ) ) : '—'; ?></td></tr>
+								<tr><th>Package verification</th><td><?php echo ! empty( $restore_safety['package']['verified'] ) ? 'Passed' : 'Failed'; ?></td></tr>
+								<tr><th>Controlled staging</th><td><?php echo esc_html( $restore_safety['staging']['status'] ?? '—' ); ?></td></tr>
+								<tr><th>Restore execution locked</th><td><?php echo ! empty( $restore_safety['staging']['restore_execution_locked'] ) ? 'Yes' : 'No'; ?></td></tr>
+							</tbody>
+						</table>
+					<?php else : ?>
+						<?php if ( ! $safety_running ) : ?>
+							<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+								<input type="hidden" name="action" value="sitevault_start_restore_safety">
+								<?php wp_nonce_field( 'sitevault_start_restore_safety' ); ?>
+								<?php submit_button( 'Create Mandatory Safety Snapshot', 'primary', 'submit', false ); ?>
+							</form>
+						<?php endif; ?>
+
+						<?php if ( $safety_running ) : ?>
+							<div id="sitevault-safety-progress">
+								<div class="sitevault-progress-head">
+									<div>
+										<div class="sitevault-progress-title" id="sitevault-safety-stage">Preparing target rollback snapshot</div>
+										<div class="sitevault-help">Snapshot ID: <code><?php echo esc_html( $restore_safety['snapshot_backup_id'] ?? '—' ); ?></code></div>
+									</div>
+									<div class="sitevault-progress-value" id="sitevault-safety-percent">Working…</div>
+								</div>
+								<div id="sitevault-safety-track" class="sitevault-progress-track is-indeterminate">
+									<div id="sitevault-safety-bar" class="sitevault-progress-bar" style="width:0%"></div>
+								</div>
+								<div class="sitevault-stage-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:14px">
+									<div id="sitevault-safety-db" class="sitevault-stage <?php echo 'database' === ( $restore_safety['stage'] ?? '' ) ? 'is-running' : 'is-complete'; ?>">
+										<span class="sitevault-stage-name">1. Target Database</span><span class="sitevault-stage-state">snapshot</span>
+									</div>
+									<div id="sitevault-safety-content" class="sitevault-stage <?php echo 'content' === ( $restore_safety['stage'] ?? '' ) ? 'is-running' : ( 'database' === ( $restore_safety['stage'] ?? '' ) ? 'is-pending' : 'is-complete' ); ?>">
+										<span class="sitevault-stage-name">2. Target Files</span><span class="sitevault-stage-state">snapshot</span>
+									</div>
+									<div id="sitevault-safety-package" class="sitevault-stage <?php echo 'package' === ( $restore_safety['stage'] ?? '' ) ? 'is-running' : 'is-pending'; ?>">
+										<span class="sitevault-stage-name">3. Verify & Seal</span><span class="sitevault-stage-state">snapshot</span>
+									</div>
+								</div>
+								<div class="sitevault-status-banner is-running">
+									<span class="sitevault-status-dot"></span>
+									<div>
+										<strong>Do not start the restore manually.</strong>
+										<p>SiteVault is preserving the current target site first. Keep this page open until the safety stage reaches complete.</p>
+									</div>
+								</div>
+							</div>
+
+							<script>
+							(function(){
+								const stage = '<?php echo esc_js( $restore_safety['stage'] ?? 'database' ); ?>';
+								let current = stage;
+								let stopped = false;
+								const track = document.getElementById('sitevault-safety-track');
+								const bar = document.getElementById('sitevault-safety-bar');
+								const pct = document.getElementById('sitevault-safety-percent');
+								const title = document.getElementById('sitevault-safety-stage');
+
+								function setStageCard(id,state){
+									const el=document.getElementById(id);
+									if(!el)return;
+									el.classList.remove('is-pending','is-running','is-complete','is-failed');
+									el.classList.add('is-'+state);
+								}
+
+								function humanBytes(bytes){
+									const value=Number(bytes||0);
+									if(value<1024)return value+' B';
+									const units=['KB','MB','GB','TB'];
+									let size=value,index=-1;
+									do{size/=1024;index++;}while(size>=1024&&index<units.length-1);
+									return size.toFixed(2)+' '+units[index];
+								}
+
+								async function post(action,nonce){
+									const body=new URLSearchParams();
+									body.set('action',action); body.set('nonce',nonce);
+									const res=await fetch(ajaxurl,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:body.toString()});
+									return res.json();
+								}
+
+								function fail(message){
+									stopped=true;
+									pct.textContent='Stopped';
+									title.textContent=message||'Safety snapshot stopped';
+								}
+
+								async function run(){
+									if(stopped)return;
+									try{
+										let payload;
+										if(current==='database'){
+											payload=await post('sitevault_restore_safety_database','<?php echo esc_js( wp_create_nonce( 'sitevault_restore_safety_database' ) ); ?>');
+										}else if(current==='content'){
+											payload=await post('sitevault_restore_safety_content','<?php echo esc_js( wp_create_nonce( 'sitevault_restore_safety_content' ) ); ?>');
+										}else{
+											payload=await post('sitevault_restore_safety_package','<?php echo esc_js( wp_create_nonce( 'sitevault_restore_safety_package' ) ); ?>');
+										}
+										if(!payload.success){fail(payload.data&&payload.data.message?payload.data.message:'Safety snapshot failed.');return;}
+										const d=payload.data||{};
+										current=d.stage||current;
+
+										if(current==='database'){
+											track.classList.remove('is-indeterminate');
+											const total=Number(d.table_total||0),done=Number(d.table_done||0);
+											const p=total>0?Math.min(30,(done/total)*30):2;
+											bar.style.width=p+'%'; pct.textContent=Math.round(p)+'%'; title.textContent='Backing up target database';
+										}else if(current==='content'){
+											setStageCard('sitevault-safety-db','complete');
+											setStageCard('sitevault-safety-content','running');
+											if(d.content_phase==='scanning'){
+												track.classList.add('is-indeterminate'); pct.textContent='Working…'; title.textContent='Scanning target wp-content';
+											}else{
+												track.classList.remove('is-indeterminate');
+												const total=Number(d.files_discovered||0),done=Number(d.files_archived||0);
+												const p=35+(total>0?Math.min(50,(done/total)*50):0);
+												bar.style.width=p+'%'; pct.textContent=Math.round(p)+'%'; title.textContent='Archiving target wp-content';
+											}
+										}else if(current==='package'){
+											setStageCard('sitevault-safety-db','complete');
+											setStageCard('sitevault-safety-content','complete');
+											setStageCard('sitevault-safety-package','running');
+											track.classList.add('is-indeterminate'); pct.textContent='Working…'; title.textContent='Verifying rollback package and sealing restore staging';
+										}
+
+										if(d.safety_ready){
+											stopped=true;
+											track.classList.remove('is-indeterminate'); bar.style.width='100%'; pct.textContent='100%'; title.textContent='Safety snapshot complete';
+											setStageCard('sitevault-safety-package','complete');
+											window.setTimeout(function(){window.location.reload();},500);
+											return;
+										}
+										window.setTimeout(run,250);
+									}catch(e){fail('Safety snapshot paused. Reload this page to resume safely.');}
+								}
+								window.setTimeout(run,350);
+							})();
+							</script>
+						<?php endif; ?>
+					<?php endif; ?>
+
+					<?php if ( ! $safety_complete ) : ?>
+						<div class="sitevault-status-banner is-warning">
+							<span class="sitevault-status-dot"></span>
+							<div>
+								<strong>Restore execution is locked.</strong>
+								<p>SiteVault will not permit the next restore layer until the target safety snapshot and its package verification are complete.</p>
+							</div>
+						</div>
+					<?php endif; ?>
 				</div>
 			<?php endif; ?>
 		</div>

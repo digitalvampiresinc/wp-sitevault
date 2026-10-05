@@ -149,7 +149,7 @@ final class SiteVault_Package_Builder {
 		$content_state      = is_readable( $content_state_file ) ? json_decode( (string) file_get_contents( $content_state_file ), true ) : array();
 
 		$manifest['completed_at'] = gmdate( 'c' );
-		$manifest['backup_type']  = 'full';
+		$manifest['backup_type']  = isset( $manifest['backup_type'] ) ? sanitize_key( (string) $manifest['backup_type'] ) : 'full';
 		$manifest['payload']      = array(
 			'database' => array(
 				'file'          => 'database/database.sql',
