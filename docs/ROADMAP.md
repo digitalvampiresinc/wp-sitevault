@@ -15,15 +15,15 @@ Tasks:
 - [x] Resumable database exporter foundation
 - [x] Resumable file inventory/scanner foundation
 - [x] Resumable wp-content ZIP archive foundation
-- [ ] SHA-256 checksums
-- [ ] Package builder
-- [ ] Backup history
+- [x] SHA-256 checksum foundation
+- [x] Portable .sitevault package builder foundation
+- [x] Backup history and protected download foundation
 - [x] Automatic chained database backup workflow
-- [ ] Runtime validation of wp-content scanner/archive
-- [ ] Full Admin Create Backup workflow
+- [x] Runtime validation of wp-content scanner/archive
+- [x] Full Admin Create Backup workflow
 - [ ] Progress/status endpoint
 - [ ] Error and operation logging
-- [ ] M1 integration test
+- [ ] Final M1 package/download integration test
 
 ## SITEVAULT-M2 — Restore & Migration
 

@@ -25,6 +25,8 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_continue_database_export', array( $this, 'handle_continue_database_export' ) );
 		add_action( 'wp_ajax_sitevault_process_database_batch', array( $this, 'handle_ajax_database_batch' ) );
 		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
+		add_action( 'wp_ajax_sitevault_build_package', array( $this, 'handle_ajax_build_package' ) );
+		add_action( 'admin_post_sitevault_download_backup', array( $this, 'handle_download_backup' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -181,6 +183,114 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_ajax_build_package(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'You are not allowed to build SiteVault packages.' ), 403 );
+		}
+
+		check_ajax_referer( 'sitevault_build_package', 'nonce' );
+
+		$backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+
+		if ( '' === $backup_id ) {
+			wp_send_json_error( array( 'message' => 'No active backup was found.' ), 404 );
+		}
+
+		$backup_dir = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id;
+		$exporter   = new SiteVault_Database_Exporter();
+		$archiver   = new SiteVault_Content_Archiver();
+		$db_state   = $exporter->get_state( $backup_dir );
+		$content    = $archiver->get_state( $backup_dir );
+
+		if ( 'complete' !== ( $db_state['status'] ?? '' ) || 'complete' !== ( $content['status'] ?? '' ) ) {
+			wp_send_json_error( array( 'message' => 'Database and wp-content stages must complete before packaging.' ), 409 );
+		}
+
+		$builder = new SiteVault_Package_Builder();
+		$result  = $builder->build( $backup_dir );
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error(
+				array(
+					'message' => $result['message'] ?? 'SiteVault package creation failed.',
+					'state'   => $result['state'] ?? null,
+				),
+				500
+			);
+		}
+
+		$state = $result['state'];
+
+		wp_send_json_success(
+			array(
+				'status'         => $state['status'] ?? 'complete',
+				'package_name'   => $state['package_name'] ?? '',
+				'package_size'   => (int) ( $state['package_size'] ?? 0 ),
+				'package_sha256' => $state['package_sha256'] ?? '',
+				'verified'       => (bool) ( $state['verified'] ?? false ),
+				'entries'        => (int) ( $state['entries'] ?? 0 ),
+			)
+		);
+	}
+
+	public function handle_download_backup(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You are not allowed to download SiteVault backups.', 'sitevault' ) );
+		}
+
+		$backup_id = isset( $_GET['backup_id'] ) ? sanitize_key( wp_unslash( $_GET['backup_id'] ) ) : '';
+
+		if ( '' === $backup_id ) {
+			wp_die( esc_html__( 'Backup ID is missing.', 'sitevault' ) );
+		}
+
+		check_admin_referer( 'sitevault_download_backup_' . $backup_id );
+
+		$history = new SiteVault_Backup_History();
+		$file    = $history->get_package_file( $backup_id );
+
+		if ( null === $file ) {
+			wp_die( esc_html__( 'The requested SiteVault package is unavailable.', 'sitevault' ) );
+		}
+
+		$size = filesize( $file );
+
+		while ( ob_get_level() > 0 ) {
+			ob_end_clean();
+		}
+
+		@set_time_limit( 0 );
+		ignore_user_abort( true );
+		nocache_headers();
+		header( 'Content-Type: application/octet-stream' );
+		header( 'Content-Disposition: attachment; filename="' . rawurlencode( basename( $file ) ) . '"' );
+		header( 'X-Content-Type-Options: nosniff' );
+
+		if ( false !== $size ) {
+			header( 'Content-Length: ' . (string) $size );
+		}
+
+		$handle = fopen( $file, 'rb' );
+
+		if ( false === $handle ) {
+			wp_die( esc_html__( 'Unable to open the SiteVault package for download.', 'sitevault' ) );
+		}
+
+		while ( ! feof( $handle ) ) {
+			$chunk = fread( $handle, 1048576 );
+
+			if ( false === $chunk ) {
+				break;
+			}
+
+			echo $chunk; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			flush();
+		}
+
+		fclose( $handle );
+		exit;
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -189,14 +299,20 @@ final class SiteVault_Admin {
 		$active_backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
 		$database_state   = null;
 		$content_state    = null;
+		$package_state    = null;
 
 		if ( '' !== $active_backup_id ) {
 			$backup_dir     = WP_CONTENT_DIR . '/sitevault/backups/' . $active_backup_id;
 			$exporter       = new SiteVault_Database_Exporter();
 			$archiver       = new SiteVault_Content_Archiver();
+			$builder        = new SiteVault_Package_Builder();
 			$database_state = $exporter->get_state( $backup_dir );
 			$content_state  = $archiver->get_state( $backup_dir );
+			$package_state  = $builder->get_state( $backup_dir );
 		}
+
+		$history_reader = new SiteVault_Backup_History();
+		$backup_history = $history_reader->get_backups( 20 );
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
 	}
