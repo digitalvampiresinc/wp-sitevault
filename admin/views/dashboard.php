@@ -7,16 +7,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 $message = isset( $_GET['sitevault_msg'] ) ? sanitize_text_field( wp_unslash( $_GET['sitevault_msg'] ) ) : '';
 $status  = isset( $_GET['sitevault_status'] ) ? sanitize_key( wp_unslash( $_GET['sitevault_status'] ) ) : '';
 
-$db_status       = $database_state['status'] ?? '';
-$content_status  = $content_state['status'] ?? '';
-$content_phase   = $content_state['phase'] ?? 'scanning';
-$backup_done     = 'complete' === $db_status && 'complete' === $content_status;
-$legacy_db_only  = 'complete' === $db_status && empty( $content_state );
-$table_total     = count( $database_state['tables'] ?? array() );
-$table_done      = min( (int) ( $database_state['table_index'] ?? 0 ), $table_total );
-$files_found     = (int) ( $content_state['files_discovered'] ?? 0 );
-$files_archived  = (int) ( $content_state['files_archived'] ?? 0 );
-$archive_verified= ! empty( $content_state['archive_verified'] );
+$db_status        = $database_state['status'] ?? '';
+$content_status   = $content_state['status'] ?? '';
+$content_phase    = $content_state['phase'] ?? 'scanning';
+$package_status   = $package_state['status'] ?? '';
+$package_verified = ! empty( $package_state['verified'] );
+$archive_verified = ! empty( $content_state['archive_verified'] );
+$backup_done      = 'complete' === $db_status && 'complete' === $content_status && 'complete' === $package_status && $package_verified;
+$needs_package    = 'complete' === $db_status && 'complete' === $content_status && ! $backup_done;
+$legacy_db_only   = 'complete' === $db_status && empty( $content_state );
+$table_total      = count( $database_state['tables'] ?? array() );
+$table_done       = min( (int) ( $database_state['table_index'] ?? 0 ), $table_total );
+$files_found      = (int) ( $content_state['files_discovered'] ?? 0 );
+$files_archived   = (int) ( $content_state['files_archived'] ?? 0 );
 
 $overall_progress = 0;
 $progress_mode     = 'determinate';
@@ -26,28 +29,33 @@ if ( $backup_done ) {
 	$overall_progress = 100;
 	$current_stage     = 'Backup complete';
 } elseif ( $legacy_db_only ) {
-	$overall_progress = 30;
+	$overall_progress = 25;
 	$current_stage     = 'Previous database-only backup';
 } elseif ( 'running' === $db_status ) {
 	$ratio             = $table_total > 0 ? $table_done / $table_total : 0;
-	$overall_progress  = max( 2, (int) round( 30 * $ratio ) );
+	$overall_progress  = max( 2, (int) round( 25 * $ratio ) );
 	$current_stage     = 'Exporting database';
 } elseif ( 'complete' === $db_status && 'running' === $content_status ) {
 	if ( 'scanning' === $content_phase ) {
-		$overall_progress = 35;
+		$overall_progress = 30;
 		$progress_mode     = 'indeterminate';
 		$current_stage     = 'Scanning wp-content';
 	} else {
 		$ratio             = $files_found > 0 ? min( 1, $files_archived / $files_found ) : 0;
-		$overall_progress  = 40 + (int) round( 55 * $ratio );
+		$overall_progress  = 35 + (int) round( 50 * $ratio );
 		$current_stage     = 'Archiving wp-content';
 	}
+} elseif ( $needs_package ) {
+	$overall_progress = 92;
+	$current_stage     = 'Building portable package';
+	$progress_mode     = 'indeterminate';
 }
 
 $db_stage_state      = 'complete' === $db_status ? 'complete' : ( 'running' === $db_status ? 'running' : 'pending' );
 $scan_stage_state    = empty( $content_state ) ? 'pending' : ( 'scanning' === $content_phase && 'running' === $content_status ? 'running' : 'complete' );
 $archive_stage_state = 'complete' === $content_status ? 'complete' : ( 'archiving' === $content_phase && 'running' === $content_status ? 'running' : 'pending' );
 $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
+$package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'running' : 'pending' );
 ?>
 <div class="wrap sitevault-wrap">
 	<div class="sitevault-header">
@@ -67,11 +75,11 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 	<?php if ( empty( $active_backup_id ) ) : ?>
 		<div class="sitevault-card">
 			<h2>Create Backup</h2>
-			<p>Start a full SiteVault test backup containing the WordPress database and wp-content files.</p>
+			<p>Create a portable SiteVault backup containing the WordPress database, wp-content archive, manifest and SHA-256 integrity data.</p>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="sitevault_start_backup">
 				<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
-				<?php submit_button( 'Start Test Backup', 'primary', 'submit', false ); ?>
+				<?php submit_button( 'Create Backup', 'primary', 'submit', false ); ?>
 			</form>
 		</div>
 	<?php else : ?>
@@ -107,6 +115,10 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 					<span class="sitevault-stage-name">4. Verify</span>
 					<span class="sitevault-stage-state"><?php echo esc_html( $verify_stage_state ); ?></span>
 				</div>
+				<div id="sitevault-stage-package" class="sitevault-stage is-<?php echo esc_attr( $package_stage_state ); ?>">
+					<span class="sitevault-stage-name">5. Package</span>
+					<span class="sitevault-stage-state"><?php echo esc_html( $package_stage_state ); ?></span>
+				</div>
 			</div>
 
 			<div id="sitevault-running-banner" class="sitevault-status-banner <?php echo $backup_done ? 'is-complete' : ( $legacy_db_only ? 'is-warning' : 'is-running' ); ?>">
@@ -115,7 +127,7 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 					<strong id="sitevault-running-title">
 						<?php
 						if ( $backup_done ) {
-							echo 'Backup complete — you may leave this page.';
+							echo 'Backup complete — your portable SiteVault package is ready.';
 						} elseif ( $legacy_db_only ) {
 							echo 'This is an older database-only backup.';
 						} else {
@@ -126,11 +138,11 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 					<p id="sitevault-running-copy">
 						<?php
 						if ( $backup_done ) {
-							echo 'Database, wp-content archive and integrity checks have finished.';
+							echo 'All backup, integrity and packaging stages have finished. You may leave this page.';
 						} elseif ( $legacy_db_only ) {
-							echo 'Start a fresh backup to run the full database + wp-content pipeline.';
+							echo 'Start a fresh backup to run the complete SiteVault pipeline.';
 						} else {
-							echo 'You can use another browser tab, but leaving or closing this SiteVault tab pauses processing safely. Returning to this page resumes from the last saved batch.';
+							echo 'You may use another browser tab, but closing this SiteVault tab pauses browser-driven processing safely. Returning to this page resumes from the saved state.';
 						}
 						?>
 					</p>
@@ -197,19 +209,47 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 						<th>SiteVault runtime excluded</th>
 						<td id="sitevault-runtime-excluded"><?php echo ! empty( $content_state['self_backup_excluded'] ) ? 'Yes' : 'Pending'; ?></td>
 					</tr>
+					<tr>
+						<th>Portable package</th>
+						<td id="sitevault-package-name"><?php echo esc_html( $package_state['package_name'] ?? 'Pending' ); ?></td>
+					</tr>
+					<tr>
+						<th>Package size</th>
+						<td id="sitevault-package-size"><?php echo ! empty( $package_state['package_size'] ) ? esc_html( size_format( (int) $package_state['package_size'], 2 ) ) : 'Pending'; ?></td>
+					</tr>
+					<tr>
+						<th>Package verification</th>
+						<td id="sitevault-package-verification"><?php echo $package_verified ? 'Passed' : 'Pending'; ?></td>
+					</tr>
 				</tbody>
 			</table>
 
 			<div class="sitevault-actions">
+				<?php if ( $backup_done ) : ?>
+					<?php
+					$download_url = wp_nonce_url(
+						add_query_arg(
+							array(
+								'action'    => 'sitevault_download_backup',
+								'backup_id' => $active_backup_id,
+							),
+							admin_url( 'admin-post.php' )
+						),
+						'sitevault_download_backup_' . $active_backup_id
+					);
+					?>
+					<a id="sitevault-download-current" class="button button-primary" href="<?php echo esc_url( $download_url ); ?>">Download .sitevault</a>
+				<?php endif; ?>
+
 				<form id="sitevault-new-backup-form" class="<?php echo ( $backup_done || $legacy_db_only ) ? '' : 'sitevault-hidden'; ?>" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="sitevault_start_backup">
 					<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
-					<?php submit_button( 'Start Another Test Backup', 'secondary', 'submit', false ); ?>
+					<?php submit_button( 'Create Another Backup', 'secondary', 'submit', false ); ?>
 				</form>
 			</div>
 		</div>
 
-		<?php if ( ! $backup_done && ! $legacy_db_only && 'failed' !== $db_status && 'failed' !== $content_status ) : ?>
+		<?php if ( ! $backup_done && ! $legacy_db_only && 'failed' !== $db_status && 'failed' !== $content_status && 'failed' !== $package_status ) : ?>
 			<script>
 			(function() {
 				const dbStatusEl       = document.getElementById('sitevault-db-status');
@@ -225,6 +265,9 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 				const verifyEl         = document.getElementById('sitevault-archive-verification');
 				const entriesEl        = document.getElementById('sitevault-archive-entries');
 				const runtimeEl        = document.getElementById('sitevault-runtime-excluded');
+				const packageNameEl    = document.getElementById('sitevault-package-name');
+				const packageSizeEl    = document.getElementById('sitevault-package-size');
+				const packageVerifyEl  = document.getElementById('sitevault-package-verification');
 				const progressTrack    = document.getElementById('sitevault-progress-track');
 				const progressBar      = document.getElementById('sitevault-progress-bar');
 				const progressValue    = document.getElementById('sitevault-progress-value');
@@ -303,6 +346,48 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 					return response.json();
 				}
 
+				async function runPackage() {
+					if (stopped) return;
+
+					setStage('sitevault-stage-package', 'running');
+					setProgress(92, 'Building portable package', true);
+					setRunningBanner(
+						'Creating the portable SiteVault package.',
+						'Checksums are being written and the final .sitevault file is being assembled and verified.',
+						'running'
+					);
+
+					try {
+						const payload = await postBatch(
+							'sitevault_build_package',
+							'<?php echo esc_js( wp_create_nonce( 'sitevault_build_package' ) ); ?>'
+						);
+
+						if (!payload.success) {
+							setStage('sitevault-stage-package', 'failed');
+							stopWithError(payload.data && payload.data.message ? payload.data.message : 'Package creation failed.');
+							return;
+						}
+
+						const data = payload.data || {};
+						stopped = true;
+						setStage('sitevault-stage-package', data.verified ? 'complete' : 'failed');
+						packageNameEl.textContent = data.package_name || 'Created';
+						packageSizeEl.textContent = humanBytes(data.package_size || 0);
+						packageVerifyEl.textContent = data.verified ? 'Passed' : 'Failed';
+						setProgress(100, 'Backup complete', false);
+						setRunningBanner(
+							'Backup complete — your portable SiteVault package is ready.',
+							'All backup, integrity and packaging stages have finished. Reload once to show the protected download action and updated Backup History.',
+							'complete'
+						);
+						newBackupForm.classList.remove('sitevault-hidden');
+					} catch (error) {
+						setStage('sitevault-stage-package', 'failed');
+						stopWithError('Package creation paused or failed. Reload this SiteVault page to retry safely.');
+					}
+				}
+
 				async function runContentBatch() {
 					if (stopped) return;
 
@@ -332,31 +417,30 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 						if (data.phase === 'scanning' && data.status !== 'complete') {
 							setStage('sitevault-stage-scan', 'running');
 							setStage('sitevault-stage-archive', 'pending');
-							setProgress(35, 'Scanning wp-content', true);
+							setProgress(30, 'Scanning wp-content', true);
 						} else if (data.status !== 'complete') {
 							setStage('sitevault-stage-scan', 'complete');
 							setStage('sitevault-stage-archive', 'running');
 							const total = Number(data.files_discovered || 0);
 							const done = Number(data.files_archived || 0);
 							const ratio = total > 0 ? Math.min(1, done / total) : 0;
-							setProgress(40 + (55 * ratio), 'Archiving wp-content', false);
+							setProgress(35 + (50 * ratio), 'Archiving wp-content', false);
 						}
 
 						if (data.status === 'complete') {
-							stopped = true;
 							setStage('sitevault-stage-scan', 'complete');
 							setStage('sitevault-stage-archive', 'complete');
 							setStage('sitevault-stage-verify', data.archive_verified ? 'complete' : 'failed');
 							verifyEl.textContent = data.archive_verified ? 'Passed' : 'Failed';
 							entriesEl.textContent = Number(data.archive_entries || 0).toLocaleString();
 							runtimeEl.textContent = data.self_backup_excluded ? 'Yes' : 'No';
-							setProgress(100, 'Backup complete', false);
-							setRunningBanner(
-								'Backup complete — you may leave this page.',
-								'Database, wp-content archive and integrity verification have all finished.',
-								'complete'
-							);
-							newBackupForm.classList.remove('sitevault-hidden');
+
+							if (!data.archive_verified) {
+								stopWithError('wp-content archive verification failed.');
+								return;
+							}
+
+							window.setTimeout(runPackage, 250);
 							return;
 						}
 
@@ -390,12 +474,12 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 						const total = Number(data.table_total || 0);
 						const done = Number(data.table_done || 0);
 						const ratio = total > 0 ? Math.min(1, done / total) : 0;
-						setProgress(30 * ratio, 'Exporting database', false);
+						setProgress(25 * ratio, 'Exporting database', false);
 
 						if (data.status === 'complete') {
 							setStage('sitevault-stage-db', 'complete');
 							setStage('sitevault-stage-scan', 'running');
-							setProgress(35, 'Scanning wp-content', true);
+							setProgress(30, 'Scanning wp-content', true);
 							window.setTimeout(runContentBatch, 250);
 							return;
 						}
@@ -410,9 +494,69 @@ $verify_stage_state  = $archive_verified ? 'complete' : 'pending';
 					window.setTimeout(runDatabaseBatch, 350);
 				<?php elseif ( 'complete' === $db_status && 'running' === $content_status ) : ?>
 					window.setTimeout(runContentBatch, 350);
+				<?php elseif ( $needs_package ) : ?>
+					window.setTimeout(runPackage, 350);
 				<?php endif; ?>
 			})();
 			</script>
 		<?php endif; ?>
 	<?php endif; ?>
+
+	<div class="sitevault-card">
+		<div class="sitevault-progress-head">
+			<div>
+				<h2 style="margin:0">Backup History</h2>
+				<div class="sitevault-help">Latest SiteVault backups stored on this server.</div>
+			</div>
+		</div>
+
+		<?php if ( empty( $backup_history ) ) : ?>
+			<p>No SiteVault backups have been created yet.</p>
+		<?php else : ?>
+			<div style="overflow-x:auto">
+				<table class="widefat striped">
+					<thead>
+						<tr>
+							<th>Created</th>
+							<th>Backup ID</th>
+							<th>Status</th>
+							<th>Package Size</th>
+							<th>Files</th>
+							<th>Action</th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $backup_history as $item ) : ?>
+							<tr>
+								<td><?php echo esc_html( $item['created_at'] ? get_date_from_gmt( $item['created_at'], 'Y-m-d H:i:s' ) : '—' ); ?></td>
+								<td><code><?php echo esc_html( $item['backup_id'] ); ?></code></td>
+								<td><?php echo esc_html( 'needs_package' === $item['package_status'] ? 'Ready to package' : ucfirst( (string) $item['package_status'] ) ); ?></td>
+								<td><?php echo null !== $item['package_size'] ? esc_html( size_format( (int) $item['package_size'], 2 ) ) : '—'; ?></td>
+								<td><?php echo esc_html( number_format_i18n( (int) $item['files_archived'] ) ); ?></td>
+								<td>
+									<?php if ( ! empty( $item['downloadable'] ) ) : ?>
+										<?php
+										$item_download_url = wp_nonce_url(
+											add_query_arg(
+												array(
+													'action'    => 'sitevault_download_backup',
+													'backup_id' => $item['backup_id'],
+												),
+												admin_url( 'admin-post.php' )
+											),
+											'sitevault_download_backup_' . $item['backup_id']
+										);
+										?>
+										<a class="button button-small" href="<?php echo esc_url( $item_download_url ); ?>">Download</a>
+									<?php else : ?>
+										<span class="sitevault-help">Unavailable</span>
+									<?php endif; ?>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			</div>
+		<?php endif; ?>
+	</div>
 </div>
