@@ -371,7 +371,7 @@ final class SiteVault_Cutover_Manager {
 		);
 	}
 
-	private function promote_filesystem( array $content_state, array $transaction ): array {
+	private function promote_filesystem( array $content_state, array &$transaction ): array {
 		$shadow_root = (string) ( $content_state['staging_root'] ?? '' );
 		$rollback    = (string) $transaction['rollback_root'];
 		$failed      = (string) $transaction['failed_source_root'];
