@@ -159,6 +159,9 @@ final class SiteVault_Admin {
 				'files_archived'      => (int) ( $state['files_archived'] ?? 0 ),
 				'bytes_archived'      => (int) ( $state['bytes_archived'] ?? 0 ),
 				'files_skipped'       => (int) ( $state['files_skipped'] ?? 0 ),
+				'archive_verified'    => (bool) ( $state['archive_verified'] ?? false ),
+				'archive_entries'     => (int) ( $state['archive_entries'] ?? 0 ),
+				'self_backup_excluded'=> (bool) ( $state['self_backup_excluded'] ?? false ),
 				'error'               => $state['error'] ?? null,
 			)
 		);
