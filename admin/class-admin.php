@@ -39,6 +39,9 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_database_stage_verify', array( $this, 'handle_ajax_database_stage_verify' ) );
 		add_action( 'wp_ajax_sitevault_database_stage_transform', array( $this, 'handle_ajax_database_stage_transform' ) );
 		add_action( 'wp_ajax_sitevault_database_stage_verify_transform', array( $this, 'handle_ajax_database_stage_verify_transform' ) );
+		add_action( 'admin_post_sitevault_start_content_staging', array( $this, 'handle_start_content_staging' ) );
+		add_action( 'wp_ajax_sitevault_content_stage_extract', array( $this, 'handle_ajax_content_stage_extract' ) );
+		add_action( 'wp_ajax_sitevault_content_stage_verify', array( $this, 'handle_ajax_content_stage_verify' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -536,6 +539,49 @@ final class SiteVault_Admin {
 		wp_send_json_success( $this->database_staging_payload( $result['state'] ) );
 	}
 
+	public function handle_start_content_staging(): void {
+		$this->authorise_request( 'sitevault_start_content_staging' );
+
+		$plan      = get_option( 'sitevault_last_restore_plan', array() );
+		$safety    = ( new SiteVault_Restore_Safety_Manager() )->get_state();
+		$database  = ( new SiteVault_Database_Stager() )->get_state();
+
+		$stager = new SiteVault_Content_Stager();
+		$result = $stager->start(
+			is_array( $plan ) ? $plan : array(),
+			is_array( $safety ) ? $safety : array(),
+			is_array( $database ) ? $database : array()
+		);
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Unable to initialise wp-content staging.' );
+		}
+
+		$this->redirect_with_message( 'started', 'Shadow wp-content staging started. Live WordPress files are not being modified.' );
+	}
+
+	public function handle_ajax_content_stage_extract(): void {
+		$this->authorise_ajax( 'sitevault_content_stage_extract' );
+		$result = ( new SiteVault_Content_Stager() )->process_batch();
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Shadow wp-content extraction failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->content_staging_payload( $result['state'] ) );
+	}
+
+	public function handle_ajax_content_stage_verify(): void {
+		$this->authorise_ajax( 'sitevault_content_stage_verify' );
+		$result = ( new SiteVault_Content_Stager() )->verify();
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Shadow wp-content verification failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->content_staging_payload( $result['state'] ) );
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -564,8 +610,28 @@ final class SiteVault_Admin {
 		$restore_safety    = $safety_manager->get_state();
 		$database_stager   = new SiteVault_Database_Stager();
 		$database_staging  = $database_stager->get_state();
+		$content_stager    = new SiteVault_Content_Stager();
+		$content_staging   = $content_stager->get_state();
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
+	}
+
+	private function content_staging_payload( array $state ): array {
+		return array(
+			'status'               => $state['status'] ?? '',
+			'stage'                => $state['stage'] ?? '',
+			'expected_files'       => (int) ( $state['expected_files'] ?? 0 ),
+			'expected_bytes'       => isset( $state['expected_bytes'] ) ? (int) $state['expected_bytes'] : null,
+			'files_staged'         => (int) ( $state['files_staged'] ?? 0 ),
+			'bytes_staged'         => (int) ( $state['bytes_staged'] ?? 0 ),
+			'verified_files'       => (int) ( $state['verified_files'] ?? 0 ),
+			'verified_bytes'       => (int) ( $state['verified_bytes'] ?? 0 ),
+			'target_before_files'  => (int) ( $state['target_before_files'] ?? 0 ),
+			'target_before_bytes'  => (int) ( $state['target_before_bytes'] ?? 0 ),
+			'live_files_modified'  => (bool) ( $state['live_files_modified'] ?? false ),
+			'ready_for_promotion'  => (bool) ( $state['ready_for_promotion'] ?? false ),
+			'error'                => $state['error'] ?? null,
+		);
 	}
 
 	private function database_staging_payload( array $state ): array {
