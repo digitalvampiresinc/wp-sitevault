@@ -839,6 +839,196 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 		</div>
 	<?php endif; ?>
 
+	<?php
+	$database_stage_plan_match = ! empty( $database_staging )
+		&& ( $database_staging['plan_id'] ?? '' ) === ( $restore_plan['plan_id'] ?? '' );
+	$database_stage_verified = $database_stage_plan_match && 'verified' === ( $database_staging['status'] ?? '' );
+	$database_stage_running = $database_stage_plan_match && in_array(
+		$database_staging['status'] ?? '',
+		array( 'running', 'imported', 'transformed' ),
+		true
+	);
+	$safety_ready_for_db = ! empty( $restore_safety )
+		&& ( $restore_safety['plan_id'] ?? '' ) === ( $restore_plan['plan_id'] ?? '' )
+		&& 'complete' === ( $restore_safety['status'] ?? '' )
+		&& 'safety_ready' === ( $restore_safety['staging']['status'] ?? '' );
+	?>
+
+	<?php if ( ! empty( $restore_plan ) && 'ready' === ( $restore_plan['status'] ?? '' ) && $safety_ready_for_db ) : ?>
+		<div class="sitevault-card">
+			<div class="sitevault-progress-head">
+				<div>
+					<h2 style="margin:0">Shadow Database Staging</h2>
+					<div class="sitevault-help">The source database is imported into isolated staging tables first. Live WordPress tables remain untouched.</div>
+				</div>
+				<?php if ( $database_stage_verified ) : ?>
+					<span class="sitevault-badge is-complete">Verified</span>
+				<?php elseif ( $database_stage_running ) : ?>
+					<span class="sitevault-badge is-running">Processing</span>
+				<?php else : ?>
+					<span class="sitevault-badge is-pending">Not started</span>
+				<?php endif; ?>
+			</div>
+
+			<?php if ( ! $database_stage_plan_match || 'failed' === ( $database_staging['status'] ?? '' ) ) : ?>
+				<div class="sitevault-status-banner is-warning">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>Live database restore is still locked.</strong>
+						<p>This stage creates shadow tables only. It will not replace, rename or drop the target WordPress tables.</p>
+					</div>
+				</div>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
+					<input type="hidden" name="action" value="sitevault_start_database_staging">
+					<?php wp_nonce_field( 'sitevault_start_database_staging' ); ?>
+					<?php submit_button( 'Prepare Shadow Database', 'primary', 'submit', false ); ?>
+				</form>
+			<?php else : ?>
+				<div class="sitevault-metrics">
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Expected tables</span>
+						<span class="sitevault-metric-value" id="sitevault-db-stage-expected"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['expected_tables'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Tables created</span>
+						<span class="sitevault-metric-value" id="sitevault-db-stage-created"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['tables_created'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Manifest rows</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['manifest_rows'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Verified rows</span>
+						<span class="sitevault-metric-value" id="sitevault-db-stage-verified-rows"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['verified_rows'] ?? 0 ) ) ); ?></span>
+					</div>
+				</div>
+
+				<table class="sitevault-detail-table">
+					<tbody>
+						<tr><th>Staging prefix</th><td><code><?php echo esc_html( $database_staging['staging_prefix'] ?? '—' ); ?></code></td></tr>
+						<tr><th>Current stage</th><td id="sitevault-db-stage-name"><?php echo esc_html( $database_staging['stage'] ?? '—' ); ?></td></tr>
+						<tr><th>SQL statements executed</th><td id="sitevault-db-stage-statements"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['statements_executed'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Rows inserted</th><td id="sitevault-db-stage-inserted"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['inserted_rows'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Migration rows scanned</th><td id="sitevault-db-stage-scanned"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['rows_scanned'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Migration rows changed</th><td id="sitevault-db-stage-rows-changed"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['rows_changed'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Serialized/text replacements</th><td id="sitevault-db-stage-replacements"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['replacements'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Live WordPress tables modified</th><td id="sitevault-db-stage-live"><?php echo ! empty( $database_staging['live_tables_modified'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Ready for future live promotion</th><td id="sitevault-db-stage-promotion"><?php echo ! empty( $database_staging['ready_for_live_promotion'] ) ? 'Yes' : 'No'; ?></td></tr>
+					</tbody>
+				</table>
+
+				<?php if ( ! empty( $database_staging['promotion_blocker'] ) ) : ?>
+					<div class="sitevault-status-banner is-warning">
+						<span class="sitevault-status-dot"></span>
+						<div><strong>Promotion remains blocked.</strong><p><?php echo esc_html( $database_staging['promotion_blocker'] ); ?></p></div>
+					</div>
+				<?php endif; ?>
+
+				<?php if ( $database_stage_verified ) : ?>
+					<div class="sitevault-status-banner is-complete">
+						<span class="sitevault-status-dot"></span>
+						<div>
+							<strong>Shadow database verified.</strong>
+							<p>The backup database has been imported and migration transforms were tested in isolated staging tables. The live WordPress database is still untouched.</p>
+						</div>
+					</div>
+				<?php else : ?>
+					<div id="sitevault-db-stage-progress" style="margin-top:16px">
+						<div class="sitevault-progress-head">
+							<div class="sitevault-progress-title" id="sitevault-db-stage-title">Processing shadow database</div>
+							<div class="sitevault-progress-value" id="sitevault-db-stage-percent">Working…</div>
+						</div>
+						<div id="sitevault-db-stage-track" class="sitevault-progress-track">
+							<div id="sitevault-db-stage-bar" class="sitevault-progress-bar" style="width:2%"></div>
+						</div>
+						<div class="sitevault-status-banner is-running">
+							<span class="sitevault-status-dot"></span>
+							<div>
+								<strong>Staging only — live tables are protected.</strong>
+								<p>Keep this page open while SiteVault imports, verifies and transforms the shadow database.</p>
+							</div>
+						</div>
+					</div>
+
+					<script>
+					(function(){
+						let current='<?php echo esc_js( $database_staging['stage'] ?? 'import' ); ?>';
+						let stopped=false;
+						const title=document.getElementById('sitevault-db-stage-title');
+						const pct=document.getElementById('sitevault-db-stage-percent');
+						const bar=document.getElementById('sitevault-db-stage-bar');
+						const stageName=document.getElementById('sitevault-db-stage-name');
+						const created=document.getElementById('sitevault-db-stage-created');
+						const statements=document.getElementById('sitevault-db-stage-statements');
+						const inserted=document.getElementById('sitevault-db-stage-inserted');
+						const verifiedRows=document.getElementById('sitevault-db-stage-verified-rows');
+						const scanned=document.getElementById('sitevault-db-stage-scanned');
+						const rowsChanged=document.getElementById('sitevault-db-stage-rows-changed');
+						const replacements=document.getElementById('sitevault-db-stage-replacements');
+
+						async function post(action,nonce){
+							const body=new URLSearchParams(); body.set('action',action); body.set('nonce',nonce);
+							const res=await fetch(ajaxurl,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:body.toString()});
+							return res.json();
+						}
+
+						function setProgress(value,label){
+							const safe=Math.max(1,Math.min(100,Math.round(value)));
+							bar.style.width=safe+'%'; pct.textContent=safe+'%'; title.textContent=label;
+						}
+
+						function fail(message){stopped=true;pct.textContent='Stopped';title.textContent=message||'Database staging stopped';}
+
+						async function run(){
+							if(stopped)return;
+							try{
+								let action,nonce;
+								if(current==='import'){action='sitevault_database_stage_import';nonce='<?php echo esc_js( wp_create_nonce( 'sitevault_database_stage_import' ) ); ?>';}
+								else if(current==='verify_import'){action='sitevault_database_stage_verify';nonce='<?php echo esc_js( wp_create_nonce( 'sitevault_database_stage_verify' ) ); ?>';}
+								else if(current==='transform'){action='sitevault_database_stage_transform';nonce='<?php echo esc_js( wp_create_nonce( 'sitevault_database_stage_transform' ) ); ?>';}
+								else if(current==='verify_transform'){action='sitevault_database_stage_verify_transform';nonce='<?php echo esc_js( wp_create_nonce( 'sitevault_database_stage_verify_transform' ) ); ?>';}
+								else{window.location.reload();return;}
+
+								const payload=await post(action,nonce);
+								if(!payload.success){fail(payload.data&&payload.data.message?payload.data.message:'Shadow database staging failed.');return;}
+								const d=payload.data||{};
+								current=d.stage||current;
+								stageName.textContent=current;
+								created.textContent=Number(d.tables_created||0).toLocaleString();
+								statements.textContent=Number(d.statements_executed||0).toLocaleString();
+								inserted.textContent=Number(d.inserted_rows||0).toLocaleString();
+								verifiedRows.textContent=Number(d.verified_rows||0).toLocaleString();
+								scanned.textContent=Number(d.transform_rows_scanned||0).toLocaleString();
+								rowsChanged.textContent=Number(d.transform_rows_changed||0).toLocaleString();
+								replacements.textContent=Number(d.transform_replacements||0).toLocaleString();
+
+								if(d.status==='verified'){
+									setProgress(100,'Shadow database verified');
+									stopped=true; window.setTimeout(function(){window.location.reload();},500); return;
+								}
+
+								if(current==='import'){
+									const total=Math.max(1,Number(d.expected_tables||0)),done=Number(d.tables_created||0);
+									setProgress(Math.min(55,(done/total)*55),'Importing backup into shadow tables');
+								}else if(current==='verify_import'){
+									setProgress(60,'Verifying staged table and row counts');
+								}else if(current==='transform'){
+									const total=Math.max(1,Number(d.expected_tables||0)),done=Number(d.transform_table_index||0);
+									setProgress(65+Math.min(28,(done/total)*28),'Applying serialized-safe URL and path transforms');
+								}else{
+									setProgress(96,'Verifying transformed shadow database');
+								}
+								window.setTimeout(run,200);
+							}catch(e){fail('Database staging paused. Reload this page to resume safely.');}
+						}
+						window.setTimeout(run,350);
+					})();
+					</script>
+				<?php endif; ?>
+			<?php endif; ?>
+		</div>
+	<?php endif; ?>
+
 	<div class="sitevault-card">
 		<div class="sitevault-progress-head">
 			<div>
