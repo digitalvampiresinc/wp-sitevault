@@ -30,6 +30,10 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_import_validate', array( $this, 'handle_import_validate' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
+		add_action( 'admin_post_sitevault_start_restore_safety', array( $this, 'handle_start_restore_safety' ) );
+		add_action( 'wp_ajax_sitevault_restore_safety_database', array( $this, 'handle_ajax_restore_safety_database' ) );
+		add_action( 'wp_ajax_sitevault_restore_safety_content', array( $this, 'handle_ajax_restore_safety_content' ) );
+		add_action( 'wp_ajax_sitevault_restore_safety_package', array( $this, 'handle_ajax_restore_safety_package' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -401,6 +405,70 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_start_restore_safety(): void {
+		$this->authorise_request( 'sitevault_start_restore_safety' );
+
+		$plan = get_option( 'sitevault_last_restore_plan', array() );
+
+		if ( ! is_array( $plan ) || 'ready' !== ( $plan['status'] ?? '' ) ) {
+			$this->redirect_with_message( 'error', 'A ready restore compatibility plan is required before creating the safety snapshot.' );
+		}
+
+		$manager = new SiteVault_Restore_Safety_Manager();
+		$result  = $manager->start( $plan );
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Unable to start the pre-restore safety snapshot.' );
+		}
+
+		$this->redirect_with_message( 'started', 'Pre-restore safety snapshot started. Keep this page open while SiteVault completes and verifies it.' );
+	}
+
+	public function handle_ajax_restore_safety_database(): void {
+		$this->authorise_ajax( 'sitevault_restore_safety_database' );
+
+		$manager = new SiteVault_Restore_Safety_Manager();
+		$result  = $manager->process_database_batch();
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Safety database snapshot failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->restore_safety_payload( $result['state'] ) );
+	}
+
+	public function handle_ajax_restore_safety_content(): void {
+		$this->authorise_ajax( 'sitevault_restore_safety_content' );
+
+		$manager = new SiteVault_Restore_Safety_Manager();
+		$result  = $manager->process_content_batch();
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Safety wp-content snapshot failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->restore_safety_payload( $result['state'] ) );
+	}
+
+	public function handle_ajax_restore_safety_package(): void {
+		$this->authorise_ajax( 'sitevault_restore_safety_package' );
+
+		$plan = get_option( 'sitevault_last_restore_plan', array() );
+
+		if ( ! is_array( $plan ) || 'ready' !== ( $plan['status'] ?? '' ) ) {
+			wp_send_json_error( array( 'message' => 'Restore plan is no longer ready. Recreate the restore plan.' ), 409 );
+		}
+
+		$manager = new SiteVault_Restore_Safety_Manager();
+		$result  = $manager->build_package_and_seal( $plan );
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Safety snapshot package verification failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->restore_safety_payload( $result['state'] ) );
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -425,8 +493,46 @@ final class SiteVault_Admin {
 		$backup_history = $history_reader->get_backups( 20 );
 		$import_validation = get_option( 'sitevault_last_import_validation', array() );
 		$restore_plan      = get_option( 'sitevault_last_restore_plan', array() );
+		$safety_manager    = new SiteVault_Restore_Safety_Manager();
+		$restore_safety    = $safety_manager->get_state();
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
+	}
+
+	private function restore_safety_payload( array $state ): array {
+		$db          = is_array( $state['database'] ?? null ) ? $state['database'] : array();
+		$content     = is_array( $state['content'] ?? null ) ? $state['content'] : array();
+		$package     = is_array( $state['package'] ?? null ) ? $state['package'] : array();
+		$table_total = count( $db['tables'] ?? array() );
+		$table_done  = min( (int) ( $db['table_index'] ?? 0 ), $table_total );
+
+		return array(
+			'status'              => $state['status'] ?? '',
+			'stage'               => $state['stage'] ?? '',
+			'snapshot_backup_id'  => $state['snapshot_backup_id'] ?? '',
+			'table_done'          => $table_done,
+			'table_total'         => $table_total,
+			'rows_exported'       => (int) ( $db['rows_exported'] ?? 0 ),
+			'content_phase'       => $content['phase'] ?? 'scanning',
+			'files_discovered'    => (int) ( $content['files_discovered'] ?? 0 ),
+			'files_archived'      => (int) ( $content['files_archived'] ?? 0 ),
+			'bytes_archived'      => (int) ( $content['bytes_archived'] ?? 0 ),
+			'archive_verified'    => (bool) ( $content['archive_verified'] ?? false ),
+			'package_verified'    => (bool) ( $package['verified'] ?? false ),
+			'package_name'        => $package['package_name'] ?? '',
+			'package_size'        => (int) ( $package['package_size'] ?? 0 ),
+			'safety_ready'        => 'complete' === ( $state['status'] ?? '' ) && 'safety_ready' === ( $state['staging']['status'] ?? '' ),
+			'execution_locked'    => (bool) ( $state['staging']['restore_execution_locked'] ?? true ),
+			'error'               => $state['error'] ?? null,
+		);
+	}
+
+	private function authorise_ajax( string $action ): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'You are not allowed to perform this SiteVault operation.' ), 403 );
+		}
+
+		check_ajax_referer( $action, 'nonce' );
 	}
 
 	private function authorise_request( string $action ): void {
