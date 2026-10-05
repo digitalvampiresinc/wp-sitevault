@@ -555,9 +555,121 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 						<tr><th>Package size</th><td><?php echo isset( $import_validation['package_size'] ) ? esc_html( size_format( (int) $import_validation['package_size'], 2 ) ) : '—'; ?></td></tr>
 					</tbody>
 				</table>
+
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
+					<input type="hidden" name="action" value="sitevault_prepare_restore_plan">
+					<?php wp_nonce_field( 'sitevault_prepare_restore_plan' ); ?>
+					<?php submit_button( 'Prepare Restore Plan', 'primary', 'submit', false ); ?>
+				</form>
+				<p class="sitevault-help">This prepares an isolated workspace and compatibility report only. It does not restore the database or wp-content.</p>
 			<?php endif; ?>
 		<?php endif; ?>
 	</div>
+
+	<?php if ( ! empty( $restore_plan ) && is_array( $restore_plan ) ) : ?>
+		<?php
+		$plan_ready = 'ready' === ( $restore_plan['status'] ?? '' );
+		$plan_blocked = 'blocked' === ( $restore_plan['status'] ?? '' );
+		?>
+		<div class="sitevault-card">
+			<div class="sitevault-progress-head">
+				<div>
+					<h2 style="margin:0">Restore Compatibility Plan</h2>
+					<div class="sitevault-help">Source-to-target comparison before any destructive restore operation is allowed.</div>
+				</div>
+				<span class="sitevault-badge <?php echo $plan_ready ? 'is-complete' : ( $plan_blocked ? 'is-failed' : 'is-pending' ); ?>">
+					<?php echo esc_html( ucfirst( (string) ( $restore_plan['status'] ?? 'unknown' ) ) ); ?>
+				</span>
+			</div>
+
+			<?php if ( ! empty( $restore_plan['error'] ) ) : ?>
+				<div class="sitevault-status-banner is-error">
+					<span class="sitevault-status-dot"></span>
+					<div><strong>Restore planning failed.</strong><p><?php echo esc_html( $restore_plan['error'] ); ?></p></div>
+				</div>
+			<?php else : ?>
+				<div class="sitevault-status-banner <?php echo $plan_ready ? 'is-complete' : 'is-error'; ?>">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong><?php echo $plan_ready ? 'Restore plan is ready for the next safety stage.' : 'Restore plan has blockers.'; ?></strong>
+						<p>No database tables or live wp-content files were changed while preparing this report.</p>
+					</div>
+				</div>
+
+				<div class="sitevault-metrics" style="margin-top:16px">
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Restore mode</span>
+						<span class="sitevault-metric-value" style="font-size:16px"><?php echo esc_html( $restore_plan['mode'] ?? '—' ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">SQL tables detected</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $restore_plan['database']['sql_table_count'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Manifest files</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $restore_plan['content']['manifest_files'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Workspace integrity</span>
+						<span class="sitevault-metric-value" style="font-size:16px"><?php echo ! empty( $restore_plan['workspace']['integrity_verified'] ) ? 'Verified' : 'Unknown'; ?></span>
+					</div>
+				</div>
+
+				<table class="sitevault-detail-table">
+					<tbody>
+						<tr><th>Plan ID</th><td><code><?php echo esc_html( $restore_plan['plan_id'] ?? '—' ); ?></code></td></tr>
+						<tr><th>Source home URL</th><td><?php echo esc_html( $restore_plan['source']['home_url'] ?? '—' ); ?></td></tr>
+						<tr><th>Target home URL</th><td><?php echo esc_html( $restore_plan['target']['home_url'] ?? '—' ); ?></td></tr>
+						<tr><th>URL replacement required</th><td><?php echo ! empty( $restore_plan['changes']['url_replacement_required'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Source DB prefix</th><td><code><?php echo esc_html( $restore_plan['source']['db_prefix'] ?? '—' ); ?></code></td></tr>
+						<tr><th>Target DB prefix</th><td><code><?php echo esc_html( $restore_plan['target']['db_prefix'] ?? '—' ); ?></code></td></tr>
+						<tr><th>DB prefix remap required</th><td><?php echo ! empty( $restore_plan['changes']['prefix_remap_required'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Filesystem path migration</th><td><?php echo ! empty( $restore_plan['changes']['path_replacement_required'] ) ? 'Required' : 'Not required'; ?></td></tr>
+						<tr><th>Source WordPress</th><td><?php echo esc_html( $restore_plan['source']['wordpress'] ?? '—' ); ?></td></tr>
+						<tr><th>Target WordPress</th><td><?php echo esc_html( $restore_plan['target']['wordpress'] ?? '—' ); ?></td></tr>
+						<tr><th>Source PHP</th><td><?php echo esc_html( $restore_plan['source']['php'] ?? '—' ); ?></td></tr>
+						<tr><th>Target PHP</th><td><?php echo esc_html( $restore_plan['target']['php'] ?? '—' ); ?></td></tr>
+						<tr><th>wp-content writable</th><td><?php echo ! empty( $restore_plan['environment']['wp_content_writable'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Available disk space</th><td><?php echo null !== ( $restore_plan['environment']['free_space'] ?? null ) ? esc_html( size_format( (int) $restore_plan['environment']['free_space'], 2 ) ) : 'Unknown'; ?></td></tr>
+						<tr><th>Restore safety estimate</th><td><?php echo esc_html( size_format( (int) ( $restore_plan['environment']['recommended_space'] ?? 0 ), 2 ) ); ?></td></tr>
+					</tbody>
+				</table>
+
+				<?php if ( ! empty( $restore_plan['warnings'] ) ) : ?>
+					<h3>Warnings</h3>
+					<ul class="sitevault-plan-list">
+						<?php foreach ( $restore_plan['warnings'] as $warning ) : ?>
+							<li><?php echo esc_html( $warning ); ?></li>
+						<?php endforeach; ?>
+					</ul>
+				<?php endif; ?>
+
+				<?php if ( ! empty( $restore_plan['blockers'] ) ) : ?>
+					<h3>Blockers</h3>
+					<ul class="sitevault-plan-list">
+						<?php foreach ( $restore_plan['blockers'] as $blocker ) : ?>
+							<li><?php echo esc_html( $blocker ); ?></li>
+						<?php endforeach; ?>
+					</ul>
+				<?php endif; ?>
+
+				<h3>Planned Restore Sequence</h3>
+				<ol class="sitevault-plan-list">
+					<?php foreach ( $restore_plan['restore_sequence'] ?? array() as $step ) : ?>
+						<li><?php echo esc_html( $step ); ?></li>
+					<?php endforeach; ?>
+				</ol>
+
+				<div class="sitevault-status-banner is-warning">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>Restore execution is still locked.</strong>
+						<p>The next stage will add the mandatory pre-restore safety snapshot and controlled restore staging before any database or live file replacement can begin.</p>
+					</div>
+				</div>
+			<?php endif; ?>
+		</div>
+	<?php endif; ?>
 
 	<div class="sitevault-card">
 		<div class="sitevault-progress-head">
