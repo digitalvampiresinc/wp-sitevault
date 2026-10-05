@@ -1269,11 +1269,90 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 				<div class="sitevault-status-banner is-warning">
 					<span class="sitevault-status-dot"></span>
 					<div>
-						<strong>Cutover is ready, but still not executable.</strong>
-						<p>The next build will introduce the controlled live-promotion transaction and automatic rollback path. This build deliberately stops before that point.</p>
+						<strong>Cutover is ready. This action will modify the live site.</strong>
+						<p>SiteVault will promote the verified shadow database and shadow wp-content in one server-side transaction. If verification fails, it will attempt an automatic database and filesystem rollback before releasing the restore lock.</p>
 					</div>
 				</div>
+
+				<div class="sitevault-card" style="margin-top:16px;background:#fff8f0;border-color:#dba617">
+					<h3 style="margin-top:0">Execute Live Restore</h3>
+					<p><strong>Cross-domain note:</strong> the restored users/usermeta tables come from the source site. Your current target-site WordPress login may stop working immediately after a successful cutover.</p>
+					<p>During the transaction SiteVault preserves the current SiteVault plugin code, retains the verified safety package, moves the current target database/files into fast rollback storage, promotes the staged source, verifies the target URLs and restored data, then unlocks the site.</p>
+
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return window.confirm('This will replace the live database and wp-content on the target site. Continue with the controlled SiteVault restore?');">
+						<input type="hidden" name="action" value="sitevault_execute_cutover">
+						<?php wp_nonce_field( 'sitevault_execute_cutover' ); ?>
+						<p>
+							<label>
+								<input type="checkbox" name="sitevault_cutover_ack" value="1" required>
+								I understand that this action will replace the live target database and wp-content.
+							</label>
+						</p>
+						<p style="max-width:420px">
+							<label for="sitevault-confirm-phrase"><strong>Type RESTORE to confirm</strong></label><br>
+							<input id="sitevault-confirm-phrase" name="sitevault_confirm_phrase" type="text" autocomplete="off" required style="width:100%;margin-top:6px">
+						</p>
+						<?php submit_button( 'Execute Controlled Live Restore', 'primary', 'submit', false ); ?>
+					</form>
+				</div>
 			<?php endif; ?>
+		</div>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $cutover_transaction ) && is_array( $cutover_transaction ) ) : ?>
+		<?php
+		$tx_status = (string) ( $cutover_transaction['status'] ?? 'unknown' );
+		$tx_ok = 'completed' === $tx_status;
+		$tx_rolled_back = 'rolled_back' === $tx_status;
+		$tx_failed = 'rollback_failed' === $tx_status;
+		?>
+		<div class="sitevault-card">
+			<div class="sitevault-progress-head">
+				<div>
+					<h2 style="margin:0">Latest Cutover Transaction</h2>
+					<div class="sitevault-help">Filesystem-backed transaction record retained independently from the restored WordPress database.</div>
+				</div>
+				<span class="sitevault-badge <?php echo $tx_ok ? 'is-complete' : ( $tx_failed ? 'is-failed' : ( $tx_rolled_back ? 'is-warning' : 'is-running' ) ); ?>">
+					<?php echo esc_html( ucwords( str_replace( '_', ' ', $tx_status ) ) ); ?>
+				</span>
+			</div>
+
+			<?php if ( $tx_ok ) : ?>
+				<div class="sitevault-status-banner is-complete">
+					<span class="sitevault-status-dot"></span>
+					<div><strong>Controlled live restore completed and verified.</strong><p>The fast rollback material and pre-restore safety package remain available.</p></div>
+				</div>
+			<?php elseif ( $tx_rolled_back ) : ?>
+				<div class="sitevault-status-banner is-warning">
+					<span class="sitevault-status-dot"></span>
+					<div><strong>Cutover failed and SiteVault automatically rolled the target back.</strong><p><?php echo esc_html( $cutover_transaction['error'] ?? '' ); ?></p></div>
+				</div>
+			<?php elseif ( $tx_failed ) : ?>
+				<div class="sitevault-status-banner is-error">
+					<span class="sitevault-status-dot"></span>
+					<div><strong>Manual recovery is required.</strong><p><?php echo esc_html( $cutover_transaction['rollback_message'] ?? $cutover_transaction['error'] ?? '' ); ?></p></div>
+				</div>
+			<?php endif; ?>
+
+			<table class="sitevault-detail-table">
+				<tbody>
+					<tr><th>Plan ID</th><td><code><?php echo esc_html( $cutover_transaction['plan_id'] ?? '—' ); ?></code></td></tr>
+					<tr><th>Restore mode</th><td><?php echo esc_html( $cutover_transaction['restore_mode'] ?? '—' ); ?></td></tr>
+					<tr><th>Source</th><td><?php echo esc_html( $cutover_transaction['source_home_url'] ?? '—' ); ?></td></tr>
+					<tr><th>Target</th><td><?php echo esc_html( $cutover_transaction['target_home_url'] ?? '—' ); ?></td></tr>
+					<tr><th>Database promoted</th><td><?php echo ! empty( $cutover_transaction['database_promoted'] ) ? 'Yes' : 'No'; ?></td></tr>
+					<tr><th>wp-content promoted</th><td><?php echo ! empty( $cutover_transaction['filesystem_promoted'] ) ? 'Yes' : 'No'; ?></td></tr>
+					<tr><th>Automatic rollback attempted</th><td><?php echo ! empty( $cutover_transaction['rollback_attempted'] ) ? 'Yes' : 'No'; ?></td></tr>
+					<tr><th>Automatic rollback result</th><td><?php echo null === ( $cutover_transaction['rollback_success'] ?? null ) ? 'Not required' : ( ! empty( $cutover_transaction['rollback_success'] ) ? 'Passed' : 'Failed' ); ?></td></tr>
+					<tr><th>Maintenance lock active</th><td><?php echo ! empty( $cutover_transaction['maintenance_lock'] ) ? 'Yes' : 'No'; ?></td></tr>
+					<?php if ( ! empty( $cutover_transaction['verification']['success'] ) ) : ?>
+						<tr><th>Verified DB tables</th><td><?php echo esc_html( number_format_i18n( (int) ( $cutover_transaction['verification']['database_tables'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Verified DB rows</th><td><?php echo esc_html( number_format_i18n( (int) ( $cutover_transaction['verification']['database_rows'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Verified target home</th><td><?php echo esc_html( $cutover_transaction['verification']['home_url'] ?? '—' ); ?></td></tr>
+						<tr><th>Verified managed files</th><td><?php echo esc_html( number_format_i18n( (int) ( $cutover_transaction['verification']['managed_files'] ?? 0 ) ) ); ?></td></tr>
+					<?php endif; ?>
+				</tbody>
+			</table>
 		</div>
 	<?php endif; ?>
 

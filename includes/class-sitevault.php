@@ -23,9 +23,26 @@ final class SiteVault {
 		self::protect_runtime_storage();
 		$this->load_dependencies();
 
+		add_action( 'init', array( $this, 'maybe_serve_cutover_lock' ), 0 );
+
 		if ( is_admin() ) {
 			SiteVault_Admin::instance()->boot();
 		}
+	}
+
+	public function maybe_serve_cutover_lock(): void {
+		if ( is_admin() || ! SiteVault_Cutover_Manager::is_locked() ) {
+			return;
+		}
+
+		status_header( 503 );
+		nocache_headers();
+		header( 'Retry-After: 30' );
+		wp_die(
+			esc_html( SiteVault_Cutover_Manager::lock_message() ),
+			'Website maintenance',
+			array( 'response' => 503 )
+		);
 	}
 
 	private function load_dependencies(): void {
@@ -43,6 +60,7 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-database-stager.php';
 		require_once SITEVAULT_PATH . 'includes/class-content-stager.php';
 		require_once SITEVAULT_PATH . 'includes/class-cutover-readiness.php';
+		require_once SITEVAULT_PATH . 'includes/class-cutover-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}
@@ -62,6 +80,7 @@ final class SiteVault {
 			WP_CONTENT_DIR . '/sitevault/imports',
 			WP_CONTENT_DIR . '/sitevault/restore-plans',
 			WP_CONTENT_DIR . '/sitevault/restore-staging',
+			WP_CONTENT_DIR . '/sitevault/cutover',
 		);
 
 		foreach ( $paths as $path ) {

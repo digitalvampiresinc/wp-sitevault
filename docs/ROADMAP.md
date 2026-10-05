@@ -36,8 +36,8 @@ Tasks:
 - [x] Serialized-safe migration staging foundation
 - [x] Mandatory pre-restore snapshot foundation
 - [x] Controlled restore staging seal foundation
-- [ ] Same-domain restore
-- [ ] Cross-domain clone
+- [ ] Same-domain restore runtime validation
+- [ ] Cross-domain clone runtime validation
 
 ## SITEVAULT-M3 — Chunked Transfer
 
@@ -62,8 +62,12 @@ Tasks:
 - Encryption
 - Standalone recovery loader
 
-- [ ] Live database promotion/swap
+- [x] Transactional live database promotion/swap foundation
 
-- [ ] Live wp-content promotion/swap
+- [x] Transactional live wp-content promotion/swap foundation
 
 - [x] Cutover readiness seal
+
+- [x] Automatic rollback on cutover failure
+- [x] Preserve active SiteVault plugin during restore
+- [x] Filesystem-backed cutover transaction journal

@@ -325,3 +325,129 @@ A successful cutover-readiness record stores:
 - next_stage = controlled-live-cutover
 
 This phase remains non-destructive. Live database promotion and live wp-content promotion are still absent.
+
+
+## Phase 7 — Controlled Live Cutover Transaction
+
+Phase 7 is the first destructive restore phase.
+
+It is available only after Cutover Readiness is sealed and requires explicit administrator confirmation:
+
+- acknowledgement checkbox
+- exact confirmation phrase `RESTORE`
+- browser confirmation
+
+A Cutover Ready state alone never starts the restore.
+
+### Single-Request Transaction
+
+The destructive promotion runs in one server-side request.
+
+This is required because a cross-domain restore replaces the source `users` and `usermeta` tables as part of the database restore. The administrator session from the target site may therefore stop being valid as soon as the database promotion succeeds.
+
+The transaction sequence is:
+
+1. Refresh and revalidate the Cutover Readiness seal.
+2. Create a filesystem-backed transaction journal.
+3. Enable the SiteVault restore lock for non-admin requests.
+4. Preserve the currently executing SiteVault plugin code.
+5. Prepare and checkpoint the database rollback map.
+6. Atomically rename the live target database tables into rollback names and promote shadow tables into the target prefix.
+7. Move the current live wp-content entries, except SiteVault runtime storage, into fast rollback storage.
+8. Promote staged source wp-content into the live target.
+9. Replace any restored SiteVault plugin copy with the currently executing SiteVault plugin build.
+10. Verify the live database, target URLs, row totals and managed wp-content file/byte totals.
+11. Reset stale SiteVault workflow options inside the restored database.
+12. Release the restore lock.
+
+### Database Promotion
+
+The database cutover uses MySQL `RENAME TABLE` so the database promotion is atomic.
+
+Current live target tables are renamed into a generated rollback namespace:
+
+```
+wp_posts
+→
+svbak_<transaction-token>_NNN
+```
+
+Verified shadow tables are renamed into the real target prefix in the same statement.
+
+Extra target tables using the target prefix that are absent from the source restore are also moved into rollback storage. This gives full-site restore semantics rather than leaving unrelated target plugin tables live.
+
+The rollback map is saved to the filesystem transaction journal before the atomic rename is executed.
+
+### Filesystem Promotion
+
+The SiteVault runtime directory itself is never moved.
+
+All other current top-level wp-content entries are moved into:
+
+```
+wp-content/sitevault/cutover/<plan-id>/rollback-wp-content/
+```
+
+The staged source top-level entries are then renamed into live wp-content.
+
+Because the source backup may contain an older SiteVault plugin build, the currently executing SiteVault plugin is copied into protected transaction storage before any destructive action. After source promotion, the restored `plugins/wp-sitevault` copy is replaced with the preserved current build.
+
+This prevents the restore engine from downgrading itself during its own restore.
+
+### Live Verification
+
+Before success is declared, SiteVault verifies:
+
+- every expected promoted source table exists under the target prefix
+- promoted database total row count matches the verified shadow database
+- target `home` and `siteurl` values match the restore target
+- live managed wp-content files match the staged source counts and byte totals
+- SiteVault runtime storage is excluded from source content verification
+- the preserved current SiteVault plugin is excluded from source-file equivalence because it intentionally replaces the source copy
+
+### Automatic Rollback
+
+If database promotion, filesystem promotion or live verification fails, SiteVault attempts rollback inside the same request.
+
+Filesystem rollback:
+
+- quarantines any promoted source wp-content
+- moves the original target wp-content entries back from fast rollback storage
+
+Database rollback:
+
+- renames promoted source tables back into their shadow names
+- renames the original target rollback tables back into their original live names
+
+If automatic rollback succeeds, the restore lock is released and the target site returns to its pre-cutover state.
+
+If automatic rollback is incomplete, SiteVault leaves a filesystem transaction record with status `rollback_failed` and reports that manual recovery is required. The verified pre-restore `.sitevault` safety package remains available as the second recovery layer.
+
+### Transaction Journal
+
+The live transaction state is stored under SiteVault runtime storage, not only in WordPress options.
+
+This is required because the live options table itself changes during database promotion.
+
+The journal records:
+
+- Plan ID
+- source and target URLs
+- restore mode
+- safety snapshot ID
+- database rollback and promotion maps
+- filesystem entries moved from live and source staging
+- current transaction stage
+- live verification result
+- automatic rollback attempt/result
+- restore-lock state
+- completion or failure timestamps
+
+### Cross-Domain Login Behaviour
+
+A successful cross-domain restore can invalidate the target administrator's current login because the source WordPress user tables become live.
+
+This is expected full-site restore behaviour.
+
+After successful cutover, the administrator may need to sign in using credentials that exist in the restored source database.
+
