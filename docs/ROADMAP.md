@@ -31,6 +31,7 @@ Tasks:
 - [x] Safe outer-package extraction workspace
 - [x] Restore compatibility plan foundation
 - [x] Shadow database importer foundation
+- [x] Shadow wp-content staging foundation
 - [ ] URL/path replacement
 - [x] Serialized-safe migration staging foundation
 - [x] Mandatory pre-restore snapshot foundation
@@ -62,3 +63,5 @@ Tasks:
 - Standalone recovery loader
 
 - [ ] Live database promotion/swap
+
+- [ ] Live wp-content promotion/swap
