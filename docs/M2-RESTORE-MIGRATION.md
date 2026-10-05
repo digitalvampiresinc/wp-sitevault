@@ -90,3 +90,48 @@ The planner classifies the operation as either:
 The plan records whether URL replacement, site URL changes, database-prefix remapping or filesystem-path migration will be required.
 
 This phase remains non-destructive. The restore execution layer stays locked until a mandatory pre-restore safety snapshot and controlled staging workflow are implemented.
+
+
+## Phase 3 — Mandatory Pre-Restore Safety Snapshot
+
+A ready restore plan does not unlock destructive restore execution.
+
+Before SiteVault can proceed, it must create a fresh `pre_restore` backup of the target site as it exists immediately before restoration.
+
+The safety snapshot uses the proven SiteVault backup engine:
+
+- bounded database export
+- bounded wp-content scan/archive
+- archive verification
+- SHA-256 checksums
+- portable .sitevault package
+- package verification
+
+The snapshot is linked to:
+
+- restore Plan ID
+- source backup ID
+- target home URL
+- restore mode
+- rollback purpose
+
+The safety workflow has separate state from ordinary user-created backups and does not replace the normal active-backup state.
+
+### Controlled Restore Staging Seal
+
+After the target safety package verifies successfully, SiteVault creates a sealed restore-staging record containing:
+
+- restore Plan ID
+- SHA-256 of the restore plan
+- source backup ID
+- target URL
+- restore mode
+- safety snapshot backup ID
+- safety package path and SHA-256
+- package verification result
+- restore_execution_locked = true
+- destructive_actions_taken = false
+
+This seal proves the target rollback package exists before the future execution layer can begin.
+
+The execution lock remains in place in this phase. Database import and live wp-content replacement are not yet implemented.
