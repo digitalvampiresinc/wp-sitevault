@@ -222,6 +222,10 @@ final class SiteVault_Cutover_Manager {
 			'plugin_files_excluded' => (int) ( $original_plugin_stats['files'] ?? 0 ),
 			'plugin_bytes_excluded' => (int) ( $original_plugin_stats['bytes'] ?? 0 ),
 			'verification'          => array(),
+			'filesystem_reversed'   => false,
+			'database_reversed'     => false,
+			'compensation_attempted'=> false,
+			'compensation_success'  => null,
 			'error'                 => null,
 		);
 
@@ -239,6 +243,10 @@ final class SiteVault_Cutover_Manager {
 			if ( ! $fs['success'] ) {
 				throw new RuntimeException( $fs['message'] );
 			}
+
+			$transaction['manual_rollback']['filesystem_reversed'] = true;
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
 
 			$plugin_restore = $this->restore_preserved_plugin( $manual_preserve );
 
@@ -258,6 +266,10 @@ final class SiteVault_Cutover_Manager {
 			if ( ! $db['success'] ) {
 				throw new RuntimeException( $db['message'] );
 			}
+
+			$transaction['manual_rollback']['database_reversed'] = true;
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
 
 			$transaction['manual_rollback']['stage'] = 'verification';
 			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
@@ -290,18 +302,52 @@ final class SiteVault_Cutover_Manager {
 			return array( 'success' => true, 'state' => $transaction );
 		} catch ( Throwable $e ) {
 			$transaction['manual_rollback']['status']     = 'failed';
-			$transaction['manual_rollback']['stage']      = 'manual_recovery_required';
 			$transaction['manual_rollback']['error']      = $e->getMessage();
 			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
-			$transaction['status']                        = 'manual_rollback_failed';
-			$transaction['stage']                         = 'manual_recovery_required';
-			$transaction['updated_at']                    = gmdate( 'c' );
+
+			$needs_compensation =
+				! empty( $transaction['manual_rollback']['filesystem_reversed'] ) ||
+				! empty( $transaction['manual_rollback']['database_reversed'] );
+
+			if ( $needs_compensation ) {
+				$transaction['manual_rollback']['compensation_attempted'] = true;
+				$transaction['manual_rollback']['stage'] = 'compensating_forward';
+				$this->checkpoint( $transaction );
+
+				$compensation = $this->compensate_failed_manual_rollback( $transaction, $manual_preserve );
+				$transaction['manual_rollback']['compensation_success'] = $compensation['success'];
+				$transaction['manual_rollback']['compensation_message'] = $compensation['message'] ?? '';
+
+				if ( $compensation['success'] ) {
+					$transaction['status'] = 'manual_rollback_reverted';
+					$transaction['stage']  = 'restored_state_recovered';
+					$this->leave_maintenance_lock();
+					$transaction['maintenance_lock'] = false;
+				} else {
+					$transaction['status'] = 'manual_rollback_failed';
+					$transaction['stage']  = 'manual_recovery_required';
+				}
+			} else {
+				$transaction['status'] = 'manual_rollback_failed';
+				$transaction['stage']  = 'manual_recovery_required';
+			}
+
+			$transaction['manual_rollback']['stage'] =
+				'manual_rollback_reverted' === $transaction['status']
+					? 'compensation_complete'
+					: 'manual_recovery_required';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$transaction['updated_at'] = gmdate( 'c' );
 			$this->checkpoint( $transaction );
 
 			return array(
 				'success' => false,
-				'message' => 'Manual rollback did not complete safely. The SiteVault transaction journal and safety package were retained. ' . $e->getMessage(),
-				'state'   => $transaction,
+				'message' => 'Manual rollback did not complete. ' .
+					( 'manual_rollback_reverted' === $transaction['status']
+						? 'SiteVault restored the successful post-cutover state instead. '
+						: 'Automatic compensation was unavailable or incomplete; manual recovery is required. ' ) .
+					$e->getMessage(),
+				'state' => $transaction,
 			);
 		}
 	}
@@ -794,6 +840,122 @@ final class SiteVault_Cutover_Manager {
 		}
 
 		return array( 'success' => true, 'message' => 'Filesystem rollback completed.' );
+	}
+
+	private function compensate_failed_manual_rollback( array &$transaction, string $preserved_plugin ): array {
+		$messages = array();
+		$success  = true;
+
+		if ( ! empty( $transaction['manual_rollback']['database_reversed'] ) ) {
+			$db = $this->reapply_promoted_database(
+				$transaction['database_rollback_map'] ?? array(),
+				$transaction['database_promotion_map'] ?? array()
+			);
+
+			if ( ! $db['success'] ) {
+				$success = false;
+				$messages[] = $db['message'];
+			}
+		}
+
+		if ( ! empty( $transaction['manual_rollback']['filesystem_reversed'] ) ) {
+			$fs = $this->reapply_promoted_filesystem( $transaction, $preserved_plugin );
+
+			if ( ! $fs['success'] ) {
+				$success = false;
+				$messages[] = $fs['message'];
+			}
+		}
+
+		return array(
+			'success' => $success,
+			'message' => $success ? 'Successful post-cutover state restored.' : implode( ' ', $messages ),
+		);
+	}
+
+	private function reapply_promoted_database( array $rollback_map, array $promotion_map ): array {
+		global $wpdb;
+
+		$pairs = array();
+
+		foreach ( $rollback_map as $live => $backup ) {
+			$live_exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
+			);
+			$backup_exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $backup ) )
+			);
+
+			if ( (string) $live_exists === (string) $live && empty( $backup_exists ) ) {
+				$pairs[] = $this->quote_identifier( (string) $live ) . ' TO ' . $this->quote_identifier( (string) $backup );
+			}
+		}
+
+		foreach ( $promotion_map as $shadow => $live ) {
+			$shadow_exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $shadow ) )
+			);
+
+			if ( (string) $shadow_exists === (string) $shadow ) {
+				$pairs[] = $this->quote_identifier( (string) $shadow ) . ' TO ' . $this->quote_identifier( (string) $live );
+			}
+		}
+
+		if ( empty( $pairs ) ) {
+			return $this->error( 'No database operations were available to restore the post-cutover state.' );
+		}
+
+		$result = $wpdb->query( 'RENAME TABLE ' . implode( ', ', $pairs ) );
+
+		if ( false === $result ) {
+			return $this->error( 'Unable to restore the post-cutover database state: ' . $wpdb->last_error );
+		}
+
+		return array( 'success' => true );
+	}
+
+	private function reapply_promoted_filesystem( array &$transaction, string $preserved_plugin ): array {
+		$rollback = (string) ( $transaction['rollback_root'] ?? '' );
+		$source   = (string) ( $transaction['failed_source_root'] ?? '' );
+
+		if ( ! is_dir( $source ) ) {
+			return $this->error( 'Promoted source quarantine is unavailable for compensation.' );
+		}
+
+		if ( ! is_dir( $rollback ) && ! wp_mkdir_p( $rollback ) ) {
+			return $this->error( 'Unable to recreate rollback filesystem storage during compensation.' );
+		}
+
+		foreach ( $this->top_level_entries( WP_CONTENT_DIR, array( 'sitevault' ) ) as $name ) {
+			$from = trailingslashit( WP_CONTENT_DIR ) . $name;
+			$to   = trailingslashit( $rollback ) . $name;
+
+			if ( file_exists( $to ) || is_link( $to ) ) {
+				$remove = $this->remove_tree( $to );
+				if ( ! $remove['success'] ) {
+					return $remove;
+				}
+			}
+
+			if ( ! @rename( $from, $to ) ) {
+				return $this->error( 'Unable to return pre-restore target files to rollback storage: ' . $name );
+			}
+		}
+
+		foreach ( $this->top_level_entries( $source, array() ) as $name ) {
+			$from = trailingslashit( $source ) . $name;
+			$to   = trailingslashit( WP_CONTENT_DIR ) . $name;
+
+			if ( file_exists( $to ) || is_link( $to ) ) {
+				return $this->error( 'Compensation destination unexpectedly exists: ' . $name );
+			}
+
+			if ( ! @rename( $from, $to ) ) {
+				return $this->error( 'Unable to restore promoted source files during compensation: ' . $name );
+			}
+		}
+
+		return $this->restore_preserved_plugin( $preserved_plugin );
 	}
 
 	private function manual_rollback_preflight( array $transaction ): array {
