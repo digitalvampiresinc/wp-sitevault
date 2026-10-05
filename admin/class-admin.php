@@ -29,6 +29,7 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_download_backup', array( $this, 'handle_download_backup' ) );
 		add_action( 'admin_post_sitevault_import_validate', array( $this, 'handle_import_validate' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
+		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -340,6 +341,66 @@ final class SiteVault_Admin {
 		$this->redirect_with_message( 'complete', 'Existing SiteVault backup validated successfully for restore compatibility.' );
 	}
 
+	public function handle_prepare_restore_plan(): void {
+		$this->authorise_request( 'sitevault_prepare_restore_plan' );
+
+		$validation = get_option( 'sitevault_last_import_validation', array() );
+
+		if (
+			! is_array( $validation ) ||
+			'validated' !== ( $validation['status'] ?? '' ) ||
+			empty( $validation['ready_for_restore'] )
+		) {
+			$this->redirect_with_message( 'error', 'Validate a SiteVault package before preparing a restore plan.' );
+		}
+
+		$workspace = new SiteVault_Restore_Workspace();
+		$prepared  = $workspace->prepare( $validation );
+
+		if ( ! $prepared['success'] ) {
+			update_option(
+				'sitevault_last_restore_plan',
+				array(
+					'status' => 'failed',
+					'error'  => $prepared['message'] ?? 'Restore workspace preparation failed.',
+				),
+				false
+			);
+			$this->redirect_with_message( 'error', $prepared['message'] ?? 'Restore workspace preparation failed.' );
+		}
+
+		$planner = new SiteVault_Restore_Planner();
+		$result  = $planner->create_plan( $prepared['state'] );
+
+		if ( ! $result['success'] ) {
+			update_option(
+				'sitevault_last_restore_plan',
+				array(
+					'status'  => 'failed',
+					'plan_id' => $prepared['state']['plan_id'] ?? '',
+					'error'   => $result['message'] ?? 'Restore compatibility planning failed.',
+				),
+				false
+			);
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Restore compatibility planning failed.' );
+		}
+
+		$plan = $result['plan'];
+		$plan['workspace'] = array(
+			'plan_id'            => $prepared['state']['plan_id'] ?? '',
+			'extracted_entries'  => (int) ( $prepared['state']['extracted_entries'] ?? 0 ),
+			'integrity_verified' => (bool) ( $prepared['state']['integrity_verified'] ?? false ),
+		);
+		update_option( 'sitevault_last_restore_plan', $plan, false );
+
+		$this->redirect_with_message(
+			'ready' === ( $plan['status'] ?? '' ) ? 'complete' : 'error',
+			'ready' === ( $plan['status'] ?? '' )
+				? 'Restore workspace prepared and compatibility plan completed. No restore changes were made.'
+				: 'Restore plan completed with blockers. Review the compatibility report before continuing.'
+		);
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -363,6 +424,7 @@ final class SiteVault_Admin {
 		$history_reader = new SiteVault_Backup_History();
 		$backup_history = $history_reader->get_backups( 20 );
 		$import_validation = get_option( 'sitevault_last_import_validation', array() );
+		$restore_plan      = get_option( 'sitevault_last_restore_plan', array() );
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
 	}
