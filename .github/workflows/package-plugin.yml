@@ -18,6 +18,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: PHP syntax check
+        run: find . -path './build' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
+
       - name: Build installable plugin ZIP
         run: bash bin/build-plugin.sh
 
