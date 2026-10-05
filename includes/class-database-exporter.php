@@ -104,8 +104,10 @@ final class SiteVault_Database_Exporter {
 			$state['table_started'] = true;
 		}
 
+		$order_by = $this->get_order_by_clause( $table_sql );
+
 		$query = $wpdb->prepare(
-			"SELECT * FROM {$table_sql} LIMIT %d OFFSET %d",
+			"SELECT * FROM {$table_sql}{$order_by} LIMIT %d OFFSET %d",
 			$batch_size,
 			$offset
 		);
@@ -192,6 +194,62 @@ final class SiteVault_Database_Exporter {
 		$this->save_state( $state_file, $state );
 
 		return array( 'success' => true, 'state' => $state );
+	}
+
+	private function get_order_by_clause( string $table_sql ): string {
+		global $wpdb;
+
+		$indexes = $wpdb->get_results( "SHOW INDEX FROM {$table_sql}", ARRAY_A );
+
+		if ( ! is_array( $indexes ) || empty( $indexes ) ) {
+			return '';
+		}
+
+		$primary = array();
+		$unique  = array();
+
+		foreach ( $indexes as $index ) {
+			$key_name = isset( $index['Key_name'] ) ? (string) $index['Key_name'] : '';
+			$column   = isset( $index['Column_name'] ) ? (string) $index['Column_name'] : '';
+			$seq      = isset( $index['Seq_in_index'] ) ? (int) $index['Seq_in_index'] : 0;
+			$nonuniq  = isset( $index['Non_unique'] ) ? (int) $index['Non_unique'] : 1;
+
+			if ( '' === $column || $seq < 1 ) {
+				continue;
+			}
+
+			if ( 'PRIMARY' === $key_name ) {
+				$primary[ $seq ] = $column;
+			} elseif ( 0 === $nonuniq ) {
+				if ( ! isset( $unique[ $key_name ] ) ) {
+					$unique[ $key_name ] = array();
+				}
+				$unique[ $key_name ][ $seq ] = $column;
+			}
+		}
+
+		$columns = array();
+
+		if ( $primary ) {
+			ksort( $primary );
+			$columns = array_values( $primary );
+		} elseif ( $unique ) {
+			$first = reset( $unique );
+			ksort( $first );
+			$columns = array_values( $first );
+		}
+
+		if ( ! $columns ) {
+			return '';
+		}
+
+		return ' ORDER BY ' . implode(
+			', ',
+			array_map(
+				fn( string $column ): string => $this->quote_identifier( $column ) . ' ASC',
+				$columns
+			)
+		);
 	}
 
 	private function sql_value( $value ): string {
