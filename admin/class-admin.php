@@ -20,10 +20,24 @@ final class SiteVault_Admin {
 
 	public function boot(): void {
 		add_action( 'admin_menu', array( $this, 'register_menu' ) );
+		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_post_sitevault_start_backup', array( $this, 'handle_start_backup' ) );
 		add_action( 'admin_post_sitevault_continue_database_export', array( $this, 'handle_continue_database_export' ) );
 		add_action( 'wp_ajax_sitevault_process_database_batch', array( $this, 'handle_ajax_database_batch' ) );
 		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
+	}
+
+	public function enqueue_assets( string $hook ): void {
+		if ( 'toplevel_page_sitevault' !== $hook ) {
+			return;
+		}
+
+		wp_enqueue_style(
+			'sitevault-admin',
+			SITEVAULT_URL . 'admin/assets/css/admin.css',
+			array(),
+			SITEVAULT_VERSION
+		);
 	}
 
 	public function register_menu(): void {
