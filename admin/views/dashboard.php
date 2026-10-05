@@ -1029,6 +1029,166 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 		</div>
 	<?php endif; ?>
 
+	<?php
+	$content_stage_plan_match = ! empty( $content_staging )
+		&& ( $content_staging['plan_id'] ?? '' ) === ( $restore_plan['plan_id'] ?? '' );
+	$content_stage_verified = $content_stage_plan_match && 'verified' === ( $content_staging['status'] ?? '' );
+	$content_stage_running = $content_stage_plan_match && 'running' === ( $content_staging['status'] ?? '' );
+	?>
+
+	<?php if ( $database_stage_verified && $safety_ready_for_db ) : ?>
+		<div class="sitevault-card">
+			<div class="sitevault-progress-head">
+				<div>
+					<h2 style="margin:0">Shadow wp-content Staging</h2>
+					<div class="sitevault-help">The backup files are extracted into an isolated staging directory. Live wp-content remains untouched.</div>
+				</div>
+				<?php if ( $content_stage_verified ) : ?>
+					<span class="sitevault-badge is-complete">Verified</span>
+				<?php elseif ( $content_stage_running ) : ?>
+					<span class="sitevault-badge is-running">Processing</span>
+				<?php else : ?>
+					<span class="sitevault-badge is-pending">Not started</span>
+				<?php endif; ?>
+			</div>
+
+			<?php if ( ! $content_stage_plan_match || 'failed' === ( $content_staging['status'] ?? '' ) ) : ?>
+				<div class="sitevault-status-banner is-warning">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>Live wp-content promotion is still locked.</strong>
+						<p>This stage creates a shadow filesystem only. It does not overwrite plugins, themes, uploads or other live content.</p>
+					</div>
+				</div>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
+					<input type="hidden" name="action" value="sitevault_start_content_staging">
+					<?php wp_nonce_field( 'sitevault_start_content_staging' ); ?>
+					<?php submit_button( 'Prepare Shadow wp-content', 'primary', 'submit', false ); ?>
+				</form>
+			<?php else : ?>
+				<div class="sitevault-metrics">
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Expected source files</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $content_staging['expected_files'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Files staged</span>
+						<span class="sitevault-metric-value" id="sitevault-content-stage-files"><?php echo esc_html( number_format_i18n( (int) ( $content_staging['files_staged'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Verified files</span>
+						<span class="sitevault-metric-value" id="sitevault-content-stage-verified"><?php echo esc_html( number_format_i18n( (int) ( $content_staging['verified_files'] ?? 0 ) ) ); ?></span>
+					</div>
+					<div class="sitevault-metric">
+						<span class="sitevault-metric-label">Target files before restore</span>
+						<span class="sitevault-metric-value"><?php echo esc_html( number_format_i18n( (int) ( $content_staging['target_before_files'] ?? 0 ) ) ); ?></span>
+					</div>
+				</div>
+
+				<table class="sitevault-detail-table">
+					<tbody>
+						<tr><th>Current stage</th><td id="sitevault-content-stage-name"><?php echo esc_html( $content_staging['stage'] ?? '—' ); ?></td></tr>
+						<tr><th>Source staged bytes</th><td id="sitevault-content-stage-bytes"><?php echo esc_html( size_format( (int) ( $content_staging['bytes_staged'] ?? 0 ), 2 ) ); ?></td></tr>
+						<tr><th>Verified staged bytes</th><td id="sitevault-content-stage-verified-bytes"><?php echo esc_html( size_format( (int) ( $content_staging['verified_bytes'] ?? 0 ), 2 ) ); ?></td></tr>
+						<tr><th>Target bytes before restore</th><td><?php echo esc_html( size_format( (int) ( $content_staging['target_before_bytes'] ?? 0 ), 2 ) ); ?></td></tr>
+						<tr><th>Live wp-content files modified</th><td id="sitevault-content-stage-live"><?php echo ! empty( $content_staging['live_files_modified'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Ready for future promotion</th><td id="sitevault-content-stage-promotion"><?php echo ! empty( $content_staging['ready_for_promotion'] ) ? 'Yes' : 'No'; ?></td></tr>
+					</tbody>
+				</table>
+
+				<?php if ( $content_stage_verified ) : ?>
+					<div class="sitevault-status-banner is-complete">
+						<span class="sitevault-status-dot"></span>
+						<div>
+							<strong>Shadow wp-content verified.</strong>
+							<p>The backup files were extracted and verified in isolated staging. Live WordPress files remain untouched.</p>
+						</div>
+					</div>
+				<?php else : ?>
+					<div style="margin-top:16px">
+						<div class="sitevault-progress-head">
+							<div class="sitevault-progress-title" id="sitevault-content-stage-title">Extracting shadow wp-content</div>
+							<div class="sitevault-progress-value" id="sitevault-content-stage-percent">Working…</div>
+						</div>
+						<div class="sitevault-progress-track">
+							<div id="sitevault-content-stage-bar" class="sitevault-progress-bar" style="width:2%"></div>
+						</div>
+						<div class="sitevault-status-banner is-running">
+							<span class="sitevault-status-dot"></span>
+							<div><strong>Staging only — live files are protected.</strong><p>Keep this page open while SiteVault extracts and verifies the source wp-content in isolation.</p></div>
+						</div>
+					</div>
+
+					<script>
+					(function(){
+						let current='<?php echo esc_js( $content_staging['stage'] ?? 'extract' ); ?>';
+						let stopped=false;
+						const title=document.getElementById('sitevault-content-stage-title');
+						const pct=document.getElementById('sitevault-content-stage-percent');
+						const bar=document.getElementById('sitevault-content-stage-bar');
+						const stageName=document.getElementById('sitevault-content-stage-name');
+						const files=document.getElementById('sitevault-content-stage-files');
+						const verified=document.getElementById('sitevault-content-stage-verified');
+						const bytes=document.getElementById('sitevault-content-stage-bytes');
+						const verifiedBytes=document.getElementById('sitevault-content-stage-verified-bytes');
+
+						function humanBytes(value){
+							value=Number(value||0);
+							if(value<1024)return value+' B';
+							const units=['KB','MB','GB','TB'];let size=value,index=-1;
+							do{size/=1024;index++;}while(size>=1024&&index<units.length-1);
+							return size.toFixed(2)+' '+units[index];
+						}
+
+						async function post(action,nonce){
+							const body=new URLSearchParams();body.set('action',action);body.set('nonce',nonce);
+							const res=await fetch(ajaxurl,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:body.toString()});
+							return res.json();
+						}
+
+						function fail(message){stopped=true;pct.textContent='Stopped';title.textContent=message||'wp-content staging stopped';}
+
+						async function run(){
+							if(stopped)return;
+							try{
+								let payload;
+								if(current==='extract'){
+									payload=await post('sitevault_content_stage_extract','<?php echo esc_js( wp_create_nonce( 'sitevault_content_stage_extract' ) ); ?>');
+								}else{
+									payload=await post('sitevault_content_stage_verify','<?php echo esc_js( wp_create_nonce( 'sitevault_content_stage_verify' ) ); ?>');
+								}
+								if(!payload.success){fail(payload.data&&payload.data.message?payload.data.message:'Shadow wp-content staging failed.');return;}
+								const d=payload.data||{};
+								current=d.stage||current;
+								stageName.textContent=current;
+								files.textContent=Number(d.files_staged||0).toLocaleString();
+								verified.textContent=Number(d.verified_files||0).toLocaleString();
+								bytes.textContent=humanBytes(d.bytes_staged||0);
+								verifiedBytes.textContent=humanBytes(d.verified_bytes||0);
+
+								if(d.status==='verified'){
+									bar.style.width='100%';pct.textContent='100%';title.textContent='Shadow wp-content verified';
+									stopped=true;window.setTimeout(function(){window.location.reload();},500);return;
+								}
+
+								if(current==='extract'){
+									const total=Math.max(1,Number(d.expected_files||0)),done=Number(d.files_staged||0);
+									const p=Math.max(2,Math.min(92,(done/total)*92));
+									bar.style.width=p+'%';pct.textContent=Math.round(p)+'%';title.textContent='Extracting shadow wp-content';
+								}else{
+									bar.style.width='96%';pct.textContent='96%';title.textContent='Verifying staged file count and bytes';
+								}
+								window.setTimeout(run,200);
+							}catch(e){fail('wp-content staging paused. Reload this page to resume safely.');}
+						}
+						window.setTimeout(run,350);
+					})();
+					</script>
+				<?php endif; ?>
+			<?php endif; ?>
+		</div>
+	<?php endif; ?>
+
 	<div class="sitevault-card">
 		<div class="sitevault-progress-head">
 			<div>
