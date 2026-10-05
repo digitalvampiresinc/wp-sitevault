@@ -90,6 +90,20 @@ $legacy_db_only  = 'complete' === $db_status && empty( $content_state );
 						<th>Files Skipped</th>
 						<td id="sitevault-files-skipped"><?php echo esc_html( number_format_i18n( (int) ( $content_state['files_skipped'] ?? 0 ) ) ); ?></td>
 					</tr>
+					<?php if ( 'complete' === $content_status ) : ?>
+						<tr>
+							<th>Archive Verification</th>
+							<td><?php echo ! empty( $content_state['archive_verified'] ) ? 'passed' : 'pending'; ?></td>
+						</tr>
+						<tr>
+							<th>Archive Entries</th>
+							<td><?php echo esc_html( number_format_i18n( (int) ( $content_state['archive_entries'] ?? 0 ) ) ); ?></td>
+						</tr>
+						<tr>
+							<th>SiteVault Runtime Excluded</th>
+							<td><?php echo ! empty( $content_state['self_backup_excluded'] ) ? 'yes' : 'no'; ?></td>
+						</tr>
+					<?php endif; ?>
 				<?php endif; ?>
 			</tbody>
 		</table>
