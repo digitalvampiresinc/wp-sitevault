@@ -33,7 +33,8 @@ Tasks:
 - [ ] Database importer
 - [ ] URL/path replacement
 - [ ] Serialized-data-safe migration
-- [ ] Pre-restore snapshot
+- [x] Mandatory pre-restore snapshot foundation
+- [x] Controlled restore staging seal foundation
 - [ ] Same-domain restore
 - [ ] Cross-domain clone
 
