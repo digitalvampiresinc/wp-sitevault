@@ -259,6 +259,182 @@ final class SiteVault_Database_Stager {
 		return array( 'success' => true, 'state' => $state );
 	}
 
+	public function process_transform_batch( array $restore_plan ): array {
+		global $wpdb;
+
+		$state = $this->get_state();
+
+		if ( 'imported' !== ( $state['status'] ?? '' ) || 'transform' !== ( $state['stage'] ?? '' ) ) {
+			return $this->error( 'Database staging transform is not ready to process.', $state );
+		}
+
+		if ( empty( $state['transform_state'] ) || ! is_array( $state['transform_state'] ) ) {
+			$state['transform_state'] = array(
+				'table_index'       => 0,
+				'row_offset'        => 0,
+				'rows_scanned'      => 0,
+				'rows_changed'      => 0,
+				'cells_changed'     => 0,
+				'replacements'      => 0,
+			);
+		}
+
+		$tables = array_values( $state['table_map'] );
+		$index  = (int) $state['transform_state']['table_index'];
+
+		if ( ! isset( $tables[ $index ] ) ) {
+			$state['status']       = 'transformed';
+			$state['stage']        = 'verify_transform';
+			$state['updated_at']   = gmdate( 'c' );
+			$this->save_state( $state );
+			return array( 'success' => true, 'state' => $state );
+		}
+
+		$table = (string) $tables[ $index ];
+		$meta  = $this->table_transform_meta( $table );
+
+		if ( ! $meta['success'] ) {
+			return $this->fail( $state, $meta['message'] );
+		}
+
+		if ( empty( $meta['text_columns'] ) ) {
+			$state['transform_state']['table_index']++;
+			$state['transform_state']['row_offset'] = 0;
+			$state['updated_at'] = gmdate( 'c' );
+			$this->save_state( $state );
+			return array( 'success' => true, 'state' => $state );
+		}
+
+		if ( empty( $meta['key_columns'] ) ) {
+			return $this->fail( $state, 'Cannot safely transform staged table without a primary or unique key: ' . $table );
+		}
+
+		$select_columns = array_values( array_unique( array_merge( $meta['key_columns'], $meta['text_columns'] ) ) );
+		$table_sql      = $this->quote_identifier( $table );
+		$columns_sql    = implode( ', ', array_map( array( $this, 'quote_identifier' ), $select_columns ) );
+		$order_sql      = implode( ', ', array_map( array( $this, 'quote_identifier' ), $meta['key_columns'] ) );
+		$offset         = max( 0, (int) $state['transform_state']['row_offset'] );
+		$limit          = 100;
+
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT {$columns_sql} FROM {$table_sql} ORDER BY {$order_sql} LIMIT %d OFFSET %d",
+				$limit,
+				$offset
+			),
+			ARRAY_A
+		);
+
+		if ( ! is_array( $rows ) ) {
+			return $this->fail( $state, 'Unable to read staged rows for migration transform: ' . $table );
+		}
+
+		if ( empty( $rows ) ) {
+			$state['transform_state']['table_index']++;
+			$state['transform_state']['row_offset'] = 0;
+			$state['updated_at'] = gmdate( 'c' );
+			$this->save_state( $state );
+			return array( 'success' => true, 'state' => $state );
+		}
+
+		$pairs = $this->replacement_pairs( $restore_plan );
+		$rows_changed = 0;
+
+		foreach ( $rows as $row ) {
+			$data  = array();
+			$where = array();
+
+			foreach ( $meta['key_columns'] as $key ) {
+				$where[ $key ] = $row[ $key ];
+			}
+
+			foreach ( $meta['text_columns'] as $column ) {
+				if ( ! array_key_exists( $column, $row ) || null === $row[ $column ] ) {
+					continue;
+				}
+
+				$transformed = $this->transform_value( (string) $row[ $column ], $pairs, 0 );
+
+				if ( ! $transformed['success'] ) {
+					return $this->fail( $state, $transformed['message'] . ' Table: ' . $table . ', column: ' . $column );
+				}
+
+				if ( $transformed['value'] !== (string) $row[ $column ] ) {
+					$data[ $column ] = $transformed['value'];
+					$state['transform_state']['cells_changed']++;
+					$state['transform_state']['replacements'] += (int) $transformed['replacements'];
+				}
+			}
+
+			if ( $data ) {
+				$updated = $wpdb->update( $table, $data, $where );
+
+				if ( false === $updated ) {
+					return $this->fail( $state, 'Unable to update staged migration data: ' . $wpdb->last_error );
+				}
+
+				$rows_changed++;
+			}
+		}
+
+		$count = count( $rows );
+		$state['transform_state']['rows_scanned'] += $count;
+		$state['transform_state']['rows_changed'] += $rows_changed;
+		$state['transform_state']['row_offset'] += $count;
+		$state['updated_at'] = gmdate( 'c' );
+
+		if ( $count < $limit ) {
+			$state['transform_state']['table_index']++;
+			$state['transform_state']['row_offset'] = 0;
+		}
+
+		$this->save_state( $state );
+
+		return array( 'success' => true, 'state' => $state );
+	}
+
+	public function verify_transform( array $restore_plan ): array {
+		global $wpdb;
+
+		$state = $this->get_state();
+
+		if ( 'transformed' !== ( $state['status'] ?? '' ) || 'verify_transform' !== ( $state['stage'] ?? '' ) ) {
+			return $this->error( 'Database staging transform is not ready for verification.', $state );
+		}
+
+		$total_rows = 0;
+
+		foreach ( $state['table_map'] as $table ) {
+			$table_sql = $this->quote_identifier( (string) $table );
+			$count = $wpdb->get_var( "SELECT COUNT(*) FROM {$table_sql}" );
+
+			if ( null === $count ) {
+				return $this->fail( $state, 'Unable to verify transformed staging table: ' . $table );
+			}
+
+			$total_rows += (int) $count;
+		}
+
+		if ( $total_rows !== (int) $state['manifest_rows'] ) {
+			return $this->fail( $state, 'Row count changed during migration transform. Staged database is unsafe.' );
+		}
+
+		$state['verified_rows'] = $total_rows;
+		$state['status']        = 'verified';
+		$state['stage']         = 'complete';
+		$state['completed_at']  = gmdate( 'c' );
+		$state['updated_at']    = gmdate( 'c' );
+		$state['live_tables_modified'] = false;
+		$state['ready_for_live_promotion'] = empty( $restore_plan['changes']['prefix_remap_required'] );
+		$state['promotion_blocker'] = ! empty( $restore_plan['changes']['prefix_remap_required'] )
+			? 'Database-prefix data remapping must be implemented before live promotion.'
+			: null;
+
+		$this->save_state( $state );
+
+		return array( 'success' => true, 'state' => $state );
+	}
+
 	public function get_state(): array {
 		$state = get_option( self::OPTION, array() );
 		return is_array( $state ) ? $state : array();
@@ -359,6 +535,179 @@ final class SiteVault_Database_Stager {
 		}
 
 		return $rewritten;
+	}
+
+	private function table_transform_meta( string $table ): array {
+		global $wpdb;
+
+		$table_sql = $this->quote_identifier( $table );
+		$columns   = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sql}", ARRAY_A );
+		$indexes   = $wpdb->get_results( "SHOW INDEX FROM {$table_sql}", ARRAY_A );
+
+		if ( ! is_array( $columns ) || ! is_array( $indexes ) ) {
+			return $this->error( 'Unable to inspect staged table schema: ' . $table );
+		}
+
+		$text_columns = array();
+
+		foreach ( $columns as $column ) {
+			$type = strtolower( (string) ( $column['Type'] ?? '' ) );
+			if ( preg_match( '/(?:char|text|blob|json|enum|set)/', $type ) ) {
+				$text_columns[] = (string) $column['Field'];
+			}
+		}
+
+		$primary = array();
+		$unique  = array();
+
+		foreach ( $indexes as $index ) {
+			$key  = (string) ( $index['Key_name'] ?? '' );
+			$col  = (string) ( $index['Column_name'] ?? '' );
+			$seq  = (int) ( $index['Seq_in_index'] ?? 0 );
+			$non  = (int) ( $index['Non_unique'] ?? 1 );
+
+			if ( '' === $col || $seq < 1 ) {
+				continue;
+			}
+
+			if ( 'PRIMARY' === $key ) {
+				$primary[ $seq ] = $col;
+			} elseif ( 0 === $non ) {
+				if ( ! isset( $unique[ $key ] ) ) {
+					$unique[ $key ] = array();
+				}
+				$unique[ $key ][ $seq ] = $col;
+			}
+		}
+
+		$key_columns = array();
+
+		if ( $primary ) {
+			ksort( $primary );
+			$key_columns = array_values( $primary );
+		} elseif ( $unique ) {
+			$first = reset( $unique );
+			ksort( $first );
+			$key_columns = array_values( $first );
+		}
+
+		return array(
+			'success'      => true,
+			'text_columns' => $text_columns,
+			'key_columns'  => $key_columns,
+		);
+	}
+
+	private function replacement_pairs( array $restore_plan ): array {
+		$pairs = array();
+
+		$raw = array(
+			(string) ( $restore_plan['source']['home_url'] ?? '' ) => (string) ( $restore_plan['target']['home_url'] ?? '' ),
+			(string) ( $restore_plan['source']['site_url'] ?? '' ) => (string) ( $restore_plan['target']['site_url'] ?? '' ),
+			(string) ( $restore_plan['source']['content_dir'] ?? '' ) => (string) ( $restore_plan['target']['content_dir'] ?? '' ),
+		);
+
+		foreach ( $raw as $from => $to ) {
+			if ( '' === $from || $from === $to ) {
+				continue;
+			}
+
+			$pairs[ $from ] = $to;
+			$escaped_from = str_replace( '/', '\\/', $from );
+			$escaped_to   = str_replace( '/', '\\/', $to );
+
+			if ( $escaped_from !== $from ) {
+				$pairs[ $escaped_from ] = $escaped_to;
+			}
+		}
+
+		uksort(
+			$pairs,
+			static fn( string $a, string $b ): int => strlen( $b ) <=> strlen( $a )
+		);
+
+		return $pairs;
+	}
+
+	private function transform_value( string $value, array $pairs, int $depth ): array {
+		if ( $depth > 12 ) {
+			return $this->error( 'Serialized migration data exceeded the safe recursion depth.' );
+		}
+
+		if ( is_serialized( $value ) ) {
+			$decoded = @unserialize( $value, array( 'allowed_classes' => false ) );
+
+			if ( false === $decoded && 'b:0;' !== $value ) {
+				return $this->error( 'Serialized migration value could not be decoded safely.' );
+			}
+
+			if ( is_object( $decoded ) ) {
+				return $this->error( 'Serialized object data requires the dedicated object-safe migration layer before live restore.' );
+			}
+
+			$nested = $this->transform_mixed( $decoded, $pairs, $depth + 1 );
+
+			if ( ! $nested['success'] ) {
+				return $nested;
+			}
+
+			return array(
+				'success'      => true,
+				'value'        => serialize( $nested['value'] ),
+				'replacements' => $nested['replacements'],
+			);
+		}
+
+		$count = 0;
+		$result = str_replace( array_keys( $pairs ), array_values( $pairs ), $value, $count );
+
+		return array(
+			'success'      => true,
+			'value'        => $result,
+			'replacements' => $count,
+		);
+	}
+
+	private function transform_mixed( $value, array $pairs, int $depth ): array {
+		if ( $depth > 12 ) {
+			return $this->error( 'Serialized migration data exceeded the safe recursion depth.' );
+		}
+
+		if ( is_string( $value ) ) {
+			return $this->transform_value( $value, $pairs, $depth );
+		}
+
+		if ( is_array( $value ) ) {
+			$out = array();
+			$total = 0;
+
+			foreach ( $value as $key => $item ) {
+				$key_result = is_string( $key )
+					? $this->transform_value( $key, $pairs, $depth + 1 )
+					: array( 'success' => true, 'value' => $key, 'replacements' => 0 );
+
+				if ( ! $key_result['success'] ) {
+					return $key_result;
+				}
+
+				$item_result = $this->transform_mixed( $item, $pairs, $depth + 1 );
+
+				if ( ! $item_result['success'] ) {
+					return $item_result;
+				}
+
+				$out[ $key_result['value'] ] = $item_result['value'];
+				$total += (int) $key_result['replacements'] + (int) $item_result['replacements'];
+			}
+
+			return array( 'success' => true, 'value' => $out, 'replacements' => $total );
+		}
+
+		if ( is_object( $value ) ) {
+			return $this->error( 'Serialized object data requires the dedicated object-safe migration layer before live restore.' );
+		}
+
+		return array( 'success' => true, 'value' => $value, 'replacements' => 0 );
 	}
 
 	private function drop_staging_tables( array $tables ): void {
