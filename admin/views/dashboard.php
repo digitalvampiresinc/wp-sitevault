@@ -502,6 +502,63 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 		<?php endif; ?>
 	<?php endif; ?>
 
+
+	<div class="sitevault-card">
+		<div class="sitevault-progress-head">
+			<div>
+				<h2 style="margin:0">Restore Package Validation</h2>
+				<div class="sitevault-help">M2 safety stage: validate a .sitevault package without changing this WordPress site.</div>
+			</div>
+		</div>
+
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data">
+			<input type="hidden" name="action" value="sitevault_import_validate">
+			<?php wp_nonce_field( 'sitevault_import_validate' ); ?>
+			<input type="file" name="sitevault_package" accept=".sitevault,application/octet-stream" required>
+			<?php submit_button( 'Upload & Validate Package', 'secondary', 'submit', false ); ?>
+		</form>
+		<p class="sitevault-help" style="margin-top:10px">
+			Current PHP upload ceiling: <?php echo esc_html( size_format( wp_max_upload_size(), 0 ) ); ?>.
+			Chunked large-package upload is a separate transfer layer planned before production migration use.
+		</p>
+
+		<?php if ( ! empty( $import_validation ) && is_array( $import_validation ) ) : ?>
+			<?php $validation_ok = 'validated' === ( $import_validation['status'] ?? '' ) && ! empty( $import_validation['ready_for_restore'] ); ?>
+			<div class="sitevault-status-banner <?php echo $validation_ok ? 'is-complete' : 'is-error'; ?>" style="margin-top:18px">
+				<span class="sitevault-status-dot"></span>
+				<div>
+					<strong><?php echo $validation_ok ? 'Package validated — ready for restore planning.' : 'Package validation failed.'; ?></strong>
+					<p>
+						<?php
+						echo esc_html(
+							$validation_ok
+								? 'Validation only. No database tables or WordPress files were changed.'
+								: ( $import_validation['error'] ?? 'The selected package did not pass SiteVault validation.' )
+						);
+						?>
+					</p>
+				</div>
+			</div>
+
+			<?php if ( $validation_ok ) : ?>
+				<table class="sitevault-detail-table">
+					<tbody>
+						<tr><th>Backup ID</th><td><code><?php echo esc_html( $import_validation['backup_id'] ?? '—' ); ?></code></td></tr>
+						<tr><th>Source site</th><td><?php echo esc_html( $import_validation['source_home_url'] ?? '—' ); ?></td></tr>
+						<tr><th>Format version</th><td><?php echo esc_html( (string) ( $import_validation['format_version'] ?? '—' ) ); ?></td></tr>
+						<tr><th>Database tables</th><td><?php echo esc_html( number_format_i18n( (int) ( $import_validation['database_tables'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Database rows</th><td><?php echo esc_html( number_format_i18n( (int) ( $import_validation['database_rows'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>wp-content files</th><td><?php echo esc_html( number_format_i18n( (int) ( $import_validation['content_files'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Nested archive entries</th><td><?php echo esc_html( number_format_i18n( (int) ( $import_validation['nested_entries'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Payload checksums verified</th><td><?php echo esc_html( number_format_i18n( (int) ( $import_validation['checksums_verified'] ?? 0 ) ) ); ?> / 3</td></tr>
+						<tr><th>SiteVault runtime excluded</th><td><?php echo ! empty( $import_validation['runtime_excluded'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Package size</th><td><?php echo isset( $import_validation['package_size'] ) ? esc_html( size_format( (int) $import_validation['package_size'], 2 ) ) : '—'; ?></td></tr>
+					</tbody>
+				</table>
+			<?php endif; ?>
+		<?php endif; ?>
+	</div>
+
 	<div class="sitevault-card">
 		<div class="sitevault-progress-head">
 			<div>
@@ -548,6 +605,12 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 										);
 										?>
 										<a class="button button-small" href="<?php echo esc_url( $item_download_url ); ?>">Download</a>
+										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;margin-left:6px">
+											<input type="hidden" name="action" value="sitevault_validate_existing">
+											<input type="hidden" name="backup_id" value="<?php echo esc_attr( $item['backup_id'] ); ?>">
+											<?php wp_nonce_field( 'sitevault_validate_existing' ); ?>
+											<button type="submit" class="button button-small">Validate for Restore</button>
+										</form>
 									<?php else : ?>
 										<span class="sitevault-help">Unavailable</span>
 									<?php endif; ?>

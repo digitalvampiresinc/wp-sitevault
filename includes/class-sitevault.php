@@ -19,6 +19,8 @@ final class SiteVault {
 	private function __construct() {}
 
 	public function boot(): void {
+		self::ensure_runtime_directories();
+		self::protect_runtime_storage();
 		$this->load_dependencies();
 
 		if ( is_admin() ) {
@@ -33,16 +35,25 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-checksum-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-package-builder.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-history.php';
+		require_once SITEVAULT_PATH . 'includes/class-import-validator.php';
+		require_once SITEVAULT_PATH . 'includes/class-import-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}
 
 	public static function activate(): void {
+		self::ensure_runtime_directories();
+		self::protect_runtime_storage();
+		update_option( 'sitevault_version', SITEVAULT_VERSION );
+	}
+
+	private static function ensure_runtime_directories(): void {
 		$paths = array(
 			WP_CONTENT_DIR . '/sitevault',
 			WP_CONTENT_DIR . '/sitevault/backups',
 			WP_CONTENT_DIR . '/sitevault/tmp',
 			WP_CONTENT_DIR . '/sitevault/logs',
+			WP_CONTENT_DIR . '/sitevault/imports',
 		);
 
 		foreach ( $paths as $path ) {
@@ -50,8 +61,24 @@ final class SiteVault {
 				wp_mkdir_p( $path );
 			}
 		}
+	}
 
-		update_option( 'sitevault_version', SITEVAULT_VERSION );
+	private static function protect_runtime_storage(): void {
+		$root = WP_CONTENT_DIR . '/sitevault';
+
+		$files = array(
+			'.htaccess' => "Order allow,deny\nDeny from all\n<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n",
+			'web.config' => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration><system.webServer><authorization><remove users=\"*\" roles=\"\" verbs=\"\"/><add accessType=\"Deny\" users=\"*\"/></authorization></system.webServer></configuration>\n",
+			'index.php' => "<?php\nhttp_response_code( 403 );\nexit;\n",
+		);
+
+		foreach ( $files as $name => $contents ) {
+			$file = $root . '/' . $name;
+
+			if ( ! file_exists( $file ) ) {
+				file_put_contents( $file, $contents, LOCK_EX );
+			}
+		}
 	}
 
 	public static function deactivate(): void {
