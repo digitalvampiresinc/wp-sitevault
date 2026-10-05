@@ -28,13 +28,14 @@ Tasks:
 ## SITEVAULT-M2 — Restore & Migration
 
 - [x] Package validation foundation
-- [ ] Batch extraction
-- Database importer
-- URL/path replacement
-- Serialized-data-safe migration
-- Pre-restore snapshot
-- Same-domain restore
-- Cross-domain clone
+- [x] Safe outer-package extraction workspace
+- [x] Restore compatibility plan foundation
+- [ ] Database importer
+- [ ] URL/path replacement
+- [ ] Serialized-data-safe migration
+- [ ] Pre-restore snapshot
+- [ ] Same-domain restore
+- [ ] Cross-domain clone
 
 ## SITEVAULT-M3 — Chunked Transfer
 
