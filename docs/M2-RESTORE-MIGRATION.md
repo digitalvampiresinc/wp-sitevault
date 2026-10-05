@@ -283,3 +283,45 @@ A successful Phase 5 ends with:
 At this point both the source database and source wp-content have been reconstructed and verified outside the live site.
 
 Live database promotion and live wp-content promotion remain separate future cutover phases.
+
+
+## Phase 6 — Cutover Readiness Gate
+
+The cutover readiness gate is the final non-destructive checkpoint before SiteVault gains a live promotion transaction.
+
+It requires, for the same Restore Plan ID:
+
+- Restore Compatibility Plan = Ready
+- Mandatory Safety Snapshot = complete and safety_ready
+- Safety rollback package = verified and still readable
+- Shadow Database = Verified and ready_for_live_promotion
+- Shadow wp-content = Verified and ready_for_promotion
+- live_tables_modified = false
+- live_files_modified = false
+
+Before sealing readiness, SiteVault rechecks:
+
+- restore-plan SHA-256 against the earlier safety staging seal
+- safety rollback package SHA-256 against the current package bytes
+- every shadow database table still exists
+- total shadow database rows still match the verified staging state
+- shadow wp-content root remains inside controlled SiteVault staging
+- shadow wp-content file count and byte total still match verified staging state
+
+If any staged component changed after verification, the cutover seal is refused.
+
+A successful cutover-readiness record stores:
+
+- Plan ID and Plan SHA-256
+- source and target URLs
+- restore mode
+- safety snapshot ID and package fingerprint
+- shadow database prefix, table count and row count
+- shadow wp-content root, file count and byte count
+- source wp-content archive SHA-256
+- migration requirements
+- destructive_actions_taken = false
+- execution_locked = true
+- next_stage = controlled-live-cutover
+
+This phase remains non-destructive. Live database promotion and live wp-content promotion are still absent.

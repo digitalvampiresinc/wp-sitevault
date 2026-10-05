@@ -65,3 +65,5 @@ Tasks:
 - [ ] Live database promotion/swap
 
 - [ ] Live wp-content promotion/swap
+
+- [x] Cutover readiness seal

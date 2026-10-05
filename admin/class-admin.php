@@ -42,6 +42,7 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_start_content_staging', array( $this, 'handle_start_content_staging' ) );
 		add_action( 'wp_ajax_sitevault_content_stage_extract', array( $this, 'handle_ajax_content_stage_extract' ) );
 		add_action( 'wp_ajax_sitevault_content_stage_verify', array( $this, 'handle_ajax_content_stage_verify' ) );
+		add_action( 'admin_post_sitevault_seal_cutover_readiness', array( $this, 'handle_seal_cutover_readiness' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -582,6 +583,32 @@ final class SiteVault_Admin {
 		wp_send_json_success( $this->content_staging_payload( $result['state'] ) );
 	}
 
+	public function handle_seal_cutover_readiness(): void {
+		$this->authorise_request( 'sitevault_seal_cutover_readiness' );
+
+		$plan      = get_option( 'sitevault_last_restore_plan', array() );
+		$safety    = ( new SiteVault_Restore_Safety_Manager() )->get_state();
+		$database  = ( new SiteVault_Database_Stager() )->get_state();
+		$content   = ( new SiteVault_Content_Stager() )->get_state();
+
+		$gate   = new SiteVault_Cutover_Readiness();
+		$result = $gate->seal(
+			is_array( $plan ) ? $plan : array(),
+			is_array( $safety ) ? $safety : array(),
+			is_array( $database ) ? $database : array(),
+			is_array( $content ) ? $content : array()
+		);
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Cutover readiness sealing failed.' );
+		}
+
+		$this->redirect_with_message(
+			'complete',
+			'Cutover readiness sealed successfully. Live restore execution is still locked.'
+		);
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -612,6 +639,8 @@ final class SiteVault_Admin {
 		$database_staging  = $database_stager->get_state();
 		$content_stager    = new SiteVault_Content_Stager();
 		$content_staging   = $content_stager->get_state();
+		$cutover_gate      = new SiteVault_Cutover_Readiness();
+		$cutover_readiness = $cutover_gate->get_state();
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
 	}
