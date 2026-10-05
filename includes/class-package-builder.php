@@ -7,6 +7,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class SiteVault_Package_Builder {
 
 	public function build( string $backup_dir ): array {
+		$existing = $this->get_state( $backup_dir );
+
+		if (
+			is_array( $existing ) &&
+			'complete' === ( $existing['status'] ?? '' ) &&
+			! empty( $existing['verified'] ) &&
+			! empty( $existing['package_file'] ) &&
+			is_readable( $existing['package_file'] )
+		) {
+			return array( 'success' => true, 'state' => $existing );
+		}
+
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return $this->error( 'PHP ZipArchive is not available on this server.' );
 		}
