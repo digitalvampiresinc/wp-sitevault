@@ -34,6 +34,11 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_restore_safety_database', array( $this, 'handle_ajax_restore_safety_database' ) );
 		add_action( 'wp_ajax_sitevault_restore_safety_content', array( $this, 'handle_ajax_restore_safety_content' ) );
 		add_action( 'wp_ajax_sitevault_restore_safety_package', array( $this, 'handle_ajax_restore_safety_package' ) );
+		add_action( 'admin_post_sitevault_start_database_staging', array( $this, 'handle_start_database_staging' ) );
+		add_action( 'wp_ajax_sitevault_database_stage_import', array( $this, 'handle_ajax_database_stage_import' ) );
+		add_action( 'wp_ajax_sitevault_database_stage_verify', array( $this, 'handle_ajax_database_stage_verify' ) );
+		add_action( 'wp_ajax_sitevault_database_stage_transform', array( $this, 'handle_ajax_database_stage_transform' ) );
+		add_action( 'wp_ajax_sitevault_database_stage_verify_transform', array( $this, 'handle_ajax_database_stage_verify_transform' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -469,6 +474,68 @@ final class SiteVault_Admin {
 		wp_send_json_success( $this->restore_safety_payload( $result['state'] ) );
 	}
 
+	public function handle_start_database_staging(): void {
+		$this->authorise_request( 'sitevault_start_database_staging' );
+
+		$plan   = get_option( 'sitevault_last_restore_plan', array() );
+		$safety = ( new SiteVault_Restore_Safety_Manager() )->get_state();
+
+		$stager = new SiteVault_Database_Stager();
+		$result = $stager->start( is_array( $plan ) ? $plan : array(), is_array( $safety ) ? $safety : array() );
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Unable to initialise staged database import.' );
+		}
+
+		$this->redirect_with_message( 'started', 'Shadow database staging started. Live WordPress tables are not being modified.' );
+	}
+
+	public function handle_ajax_database_stage_import(): void {
+		$this->authorise_ajax( 'sitevault_database_stage_import' );
+		$result = ( new SiteVault_Database_Stager() )->process_import_batch();
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Shadow database import failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->database_staging_payload( $result['state'] ) );
+	}
+
+	public function handle_ajax_database_stage_verify(): void {
+		$this->authorise_ajax( 'sitevault_database_stage_verify' );
+		$result = ( new SiteVault_Database_Stager() )->verify_import();
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Shadow database verification failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->database_staging_payload( $result['state'] ) );
+	}
+
+	public function handle_ajax_database_stage_transform(): void {
+		$this->authorise_ajax( 'sitevault_database_stage_transform' );
+		$plan = get_option( 'sitevault_last_restore_plan', array() );
+		$result = ( new SiteVault_Database_Stager() )->process_transform_batch( is_array( $plan ) ? $plan : array() );
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Shadow database migration transform failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->database_staging_payload( $result['state'] ) );
+	}
+
+	public function handle_ajax_database_stage_verify_transform(): void {
+		$this->authorise_ajax( 'sitevault_database_stage_verify_transform' );
+		$plan = get_option( 'sitevault_last_restore_plan', array() );
+		$result = ( new SiteVault_Database_Stager() )->verify_transform( is_array( $plan ) ? $plan : array() );
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Shadow database transform verification failed.' ), 500 );
+		}
+
+		wp_send_json_success( $this->database_staging_payload( $result['state'] ) );
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -495,8 +562,37 @@ final class SiteVault_Admin {
 		$restore_plan      = get_option( 'sitevault_last_restore_plan', array() );
 		$safety_manager    = new SiteVault_Restore_Safety_Manager();
 		$restore_safety    = $safety_manager->get_state();
+		$database_stager   = new SiteVault_Database_Stager();
+		$database_staging  = $database_stager->get_state();
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
+	}
+
+	private function database_staging_payload( array $state ): array {
+		$transform = is_array( $state['transform_state'] ?? null ) ? $state['transform_state'] : array();
+
+		return array(
+			'status'                   => $state['status'] ?? '',
+			'stage'                    => $state['stage'] ?? '',
+			'staging_prefix'           => $state['staging_prefix'] ?? '',
+			'expected_tables'          => (int) ( $state['expected_tables'] ?? 0 ),
+			'tables_created'           => (int) ( $state['tables_created'] ?? 0 ),
+			'manifest_rows'            => (int) ( $state['manifest_rows'] ?? 0 ),
+			'inserted_rows'            => (int) ( $state['inserted_rows'] ?? 0 ),
+			'verified_tables'          => (int) ( $state['verified_tables'] ?? 0 ),
+			'verified_rows'            => (int) ( $state['verified_rows'] ?? 0 ),
+			'statements_executed'      => (int) ( $state['statements_executed'] ?? 0 ),
+			'transform_required'       => (bool) ( $state['transform_required'] ?? false ),
+			'transform_table_index'    => (int) ( $transform['table_index'] ?? 0 ),
+			'transform_rows_scanned'   => (int) ( $transform['rows_scanned'] ?? 0 ),
+			'transform_rows_changed'   => (int) ( $transform['rows_changed'] ?? 0 ),
+			'transform_cells_changed'  => (int) ( $transform['cells_changed'] ?? 0 ),
+			'transform_replacements'   => (int) ( $transform['replacements'] ?? 0 ),
+			'live_tables_modified'     => (bool) ( $state['live_tables_modified'] ?? false ),
+			'ready_for_live_promotion' => (bool) ( $state['ready_for_live_promotion'] ?? false ),
+			'promotion_blocker'        => $state['promotion_blocker'] ?? null,
+			'error'                    => $state['error'] ?? null,
+		);
 	}
 
 	private function restore_safety_payload( array $state ): array {
