@@ -39,6 +39,7 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-import-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-restore-workspace.php';
 		require_once SITEVAULT_PATH . 'includes/class-restore-planner.php';
+		require_once SITEVAULT_PATH . 'includes/class-restore-safety-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}
@@ -57,6 +58,7 @@ final class SiteVault {
 			WP_CONTENT_DIR . '/sitevault/logs',
 			WP_CONTENT_DIR . '/sitevault/imports',
 			WP_CONTENT_DIR . '/sitevault/restore-plans',
+			WP_CONTENT_DIR . '/sitevault/restore-staging',
 		);
 
 		foreach ( $paths as $path ) {
