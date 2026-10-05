@@ -50,3 +50,5 @@
 .sitevault-hidden{display:none!important}
 @media (max-width:900px){.sitevault-stage-grid,.sitevault-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:600px){.sitevault-header{display:block}.sitevault-version{margin-top:10px}.sitevault-stage-grid,.sitevault-metrics{grid-template-columns:1fr}}
+
+.sitevault-plan-list{margin:8px 0 18px 22px}.sitevault-plan-list li{margin:7px 0;line-height:1.5}
