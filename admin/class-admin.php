@@ -20,6 +20,8 @@ final class SiteVault_Admin {
 
 	public function boot(): void {
 		add_action( 'admin_menu', array( $this, 'register_menu' ) );
+		add_action( 'admin_post_sitevault_start_backup', array( $this, 'handle_start_backup' ) );
+		add_action( 'admin_post_sitevault_continue_database_export', array( $this, 'handle_continue_database_export' ) );
 	}
 
 	public function register_menu(): void {
@@ -34,11 +36,81 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_start_backup(): void {
+		$this->authorise_request( 'sitevault_start_backup' );
+
+		$manager = new SiteVault_Backup_Manager();
+		$result  = $manager->create_backup();
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be started.' );
+		}
+
+		update_option( 'sitevault_active_backup_id', $result['backup_id'], false );
+
+		$this->redirect_with_message( 'started', 'Backup initialised. Database export is ready to process.' );
+	}
+
+	public function handle_continue_database_export(): void {
+		$this->authorise_request( 'sitevault_continue_database_export' );
+
+		$backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+
+		if ( '' === $backup_id ) {
+			$this->redirect_with_message( 'error', 'No active backup was found.' );
+		}
+
+		$backup_dir = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id;
+		$exporter   = new SiteVault_Database_Exporter();
+		$result     = $exporter->process_batch( $backup_dir );
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Database export failed.' );
+		}
+
+		$status = $result['state']['status'] ?? 'running';
+
+		$this->redirect_with_message(
+			'complete' === $status ? 'complete' : 'progress',
+			'complete' === $status ? 'Database export completed.' : 'Database export batch completed.'
+		);
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
 
+		$active_backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+		$database_state   = null;
+
+		if ( '' !== $active_backup_id ) {
+			$exporter       = new SiteVault_Database_Exporter();
+			$database_state = $exporter->get_state( WP_CONTENT_DIR . '/sitevault/backups/' . $active_backup_id );
+		}
+
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
+	}
+
+	private function authorise_request( string $action ): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You are not allowed to perform this SiteVault operation.', 'sitevault' ) );
+		}
+
+		check_admin_referer( $action );
+	}
+
+	private function redirect_with_message( string $status, string $message ): void {
+		$url = add_query_arg(
+			array(
+				'page'             => 'sitevault',
+				'sitevault_status' => sanitize_key( $status ),
+				'sitevault_msg'    => $message,
+			),
+			admin_url( 'admin.php' )
+		);
+
+		wp_safe_redirect( $url );
+		exit;
 	}
 }
