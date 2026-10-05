@@ -27,6 +27,8 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
 		add_action( 'wp_ajax_sitevault_build_package', array( $this, 'handle_ajax_build_package' ) );
 		add_action( 'admin_post_sitevault_download_backup', array( $this, 'handle_download_backup' ) );
+		add_action( 'admin_post_sitevault_import_validate', array( $this, 'handle_import_validate' ) );
+		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -291,6 +293,53 @@ final class SiteVault_Admin {
 		exit;
 	}
 
+	public function handle_import_validate(): void {
+		$this->authorise_request( 'sitevault_import_validate' );
+
+		if ( empty( $_FILES['sitevault_package'] ) || ! is_array( $_FILES['sitevault_package'] ) ) {
+			$this->redirect_with_message( 'error', 'Please choose a .sitevault package to validate.' );
+		}
+
+		$manager = new SiteVault_Import_Manager();
+		$result  = $manager->create_from_upload( $_FILES['sitevault_package'] );
+
+		if ( ! $result['success'] ) {
+			update_option( 'sitevault_last_import_validation', $result['state'] ?? array(
+				'status' => 'invalid',
+				'error'  => $result['message'] ?? 'Package validation failed.',
+			), false );
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Package validation failed.' );
+		}
+
+		update_option( 'sitevault_last_import_validation', $result['state'], false );
+		$this->redirect_with_message( 'complete', 'SiteVault package validated successfully. No restore changes were made.' );
+	}
+
+	public function handle_validate_existing(): void {
+		$this->authorise_request( 'sitevault_validate_existing' );
+
+		$backup_id = isset( $_POST['backup_id'] ) ? sanitize_key( wp_unslash( $_POST['backup_id'] ) ) : '';
+
+		if ( '' === $backup_id ) {
+			$this->redirect_with_message( 'error', 'Backup ID is missing.' );
+		}
+
+		$manager = new SiteVault_Import_Manager();
+		$result  = $manager->validate_existing_backup( $backup_id );
+
+		if ( ! $result['success'] ) {
+			update_option( 'sitevault_last_import_validation', array(
+				'status'    => 'invalid',
+				'backup_id' => $backup_id,
+				'error'     => $result['message'] ?? 'Package validation failed.',
+			), false );
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Package validation failed.' );
+		}
+
+		update_option( 'sitevault_last_import_validation', $result['state'], false );
+		$this->redirect_with_message( 'complete', 'Existing SiteVault backup validated successfully for restore compatibility.' );
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -313,6 +362,7 @@ final class SiteVault_Admin {
 
 		$history_reader = new SiteVault_Backup_History();
 		$backup_history = $history_reader->get_backups( 20 );
+		$import_validation = get_option( 'sitevault_last_import_validation', array() );
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
 	}
