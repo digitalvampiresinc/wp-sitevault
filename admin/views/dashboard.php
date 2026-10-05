@@ -140,6 +140,11 @@ $status  = isset( $_GET['sitevault_status'] ) ? sanitize_key( wp_unslash( $_GET[
 			</script>
 		<?php elseif ( $database_state && 'complete' === ( $database_state['status'] ?? '' ) ) : ?>
 			<p><strong>Database dump created successfully.</strong> The next M1 component is the wp-content file scanner/archive engine.</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
+				<input type="hidden" name="action" value="sitevault_start_backup">
+				<?php wp_nonce_field( 'sitevault_start_backup' ); ?>
+				<?php submit_button( 'Start Another Test Backup', 'secondary', 'submit', false ); ?>
+			</form>
 		<?php endif; ?>
 	<?php endif; ?>
 </div>
