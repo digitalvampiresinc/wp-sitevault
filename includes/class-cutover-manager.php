@@ -89,7 +89,7 @@ final class SiteVault_Cutover_Manager {
 			$transaction['updated_at'] = gmdate( 'c' );
 			$this->checkpoint( $transaction );
 
-			$db_result = $this->promote_database( $restore_plan, $database_state, $token );
+			$db_result = $this->promote_database( $restore_plan, $database_state, $token, $transaction );
 
 			if ( ! $db_result['success'] ) {
 				throw new RuntimeException( $db_result['message'] );
@@ -274,7 +274,7 @@ final class SiteVault_Cutover_Manager {
 		return array( 'success' => true );
 	}
 
-	private function promote_database( array $restore_plan, array $database_state, string $token ): array {
+	private function promote_database( array $restore_plan, array $database_state, string $token, array &$transaction ): array {
 		global $wpdb;
 
 		$target_prefix = (string) ( $restore_plan['target']['db_prefix'] ?? $wpdb->prefix );
@@ -357,6 +357,12 @@ final class SiteVault_Cutover_Manager {
 		if ( empty( $rename_pairs ) ) {
 			return $this->error( 'No database rename operations were generated.' );
 		}
+
+		$transaction['database_rollback_map']  = $rollback_map;
+		$transaction['database_promotion_map'] = $promotion_map;
+		$transaction['database_promotion_prepared'] = true;
+		$transaction['updated_at'] = gmdate( 'c' );
+		$this->checkpoint( $transaction );
 
 		$result = $wpdb->query( 'RENAME TABLE ' . implode( ', ', $rename_pairs ) );
 
