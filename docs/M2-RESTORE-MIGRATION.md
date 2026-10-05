@@ -217,3 +217,69 @@ A successful Phase 4 ends with:
 - optional promotion blocker
 
 Live table promotion/swap remains a separate later phase.
+
+
+## Phase 5 — Shadow wp-content Staging
+
+After the matching shadow database reaches Verified status, SiteVault may stage the source wp-content archive into an isolated filesystem area.
+
+This phase still does not overwrite, rename or delete anything inside the live target wp-content directory.
+
+### Preconditions
+
+wp-content staging requires all of the following for the same restore Plan ID:
+
+- Restore Compatibility Plan = Ready
+- Mandatory target safety snapshot = Safety Ready
+- Shadow database = Verified
+
+### Controlled Extraction
+
+The nested `wp-content.zip` from the restore-plan workspace is opened directly.
+
+Each archive entry must:
+
+- begin with `wp-content/`
+- remain free from parent-directory traversal
+- remain free from absolute/drive-letter paths
+- never target `wp-content/sitevault/`
+
+The outer `wp-content/` container prefix is stripped and files are written beneath:
+
+```
+wp-content/sitevault/restore-staging/<plan-id>/shadow-wp-content/
+```
+
+Each file is:
+
+1. streamed from the archive
+2. written to a temporary staging file
+3. checked against the ZIP entry's expected uncompressed size
+4. atomically renamed into its final shadow path
+
+Extraction is bounded to a maximum of 100 files or approximately 20 MB of uncompressed file data per browser-driven request. A single large file may occupy its own batch.
+
+### Final Verification
+
+After extraction completes, SiteVault independently walks the shadow wp-content directory and verifies:
+
+- staged regular-file count equals the backup manifest file count
+- total staged uncompressed bytes equal the backup manifest byte count
+- every verified file resolves inside the controlled shadow root
+
+The target site's own pre-restore file/byte totals are retained from the mandatory safety snapshot for comparison.
+
+### Safety Result
+
+A successful Phase 5 ends with:
+
+- status = verified
+- source files staged and verified
+- source bytes staged and verified
+- target-before-restore file/byte totals preserved
+- live_files_modified = false
+- ready_for_promotion = true
+
+At this point both the source database and source wp-content have been reconstructed and verified outside the live site.
+
+Live database promotion and live wp-content promotion remain separate future cutover phases.
