@@ -54,7 +54,27 @@ final class SiteVault {
 			}
 		}
 
+		self::protect_runtime_storage();
+
 		update_option( 'sitevault_version', SITEVAULT_VERSION );
+	}
+
+	private static function protect_runtime_storage(): void {
+		$root = WP_CONTENT_DIR . '/sitevault';
+
+		$files = array(
+			'.htaccess' => "Order allow,deny\nDeny from all\n<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n",
+			'web.config' => "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration><system.webServer><authorization><remove users=\"*\" roles=\"\" verbs=\"\"/><add accessType=\"Deny\" users=\"*\"/></authorization></system.webServer></configuration>\n",
+			'index.php' => "<?php\nhttp_response_code( 403 );\nexit;\n",
+		);
+
+		foreach ( $files as $name => $contents ) {
+			$file = $root . '/' . $name;
+
+			if ( ! file_exists( $file ) ) {
+				file_put_contents( $file, $contents, LOCK_EX );
+			}
+		}
 	}
 
 	public static function deactivate(): void {
