@@ -23,6 +23,7 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_start_backup', array( $this, 'handle_start_backup' ) );
 		add_action( 'admin_post_sitevault_continue_database_export', array( $this, 'handle_continue_database_export' ) );
 		add_action( 'wp_ajax_sitevault_process_database_batch', array( $this, 'handle_ajax_database_batch' ) );
+		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
 	}
 
 	public function register_menu(): void {
@@ -119,6 +120,50 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_ajax_content_batch(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'You are not allowed to perform this SiteVault operation.' ), 403 );
+		}
+
+		check_ajax_referer( 'sitevault_process_content_batch', 'nonce' );
+
+		$backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+
+		if ( '' === $backup_id ) {
+			wp_send_json_error( array( 'message' => 'No active backup was found.' ), 404 );
+		}
+
+		$backup_dir = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id;
+		$archiver   = new SiteVault_Content_Archiver();
+		$result     = $archiver->process_batch( $backup_dir );
+
+		if ( ! $result['success'] ) {
+			wp_send_json_error(
+				array(
+					'message' => $result['message'] ?? 'wp-content backup failed.',
+					'state'   => $result['state'] ?? null,
+				),
+				500
+			);
+		}
+
+		$state = $result['state'];
+
+		wp_send_json_success(
+			array(
+				'status'              => $state['status'] ?? 'running',
+				'phase'               => $state['phase'] ?? 'scanning',
+				'directories_scanned' => (int) ( $state['directories_scanned'] ?? 0 ),
+				'files_discovered'    => (int) ( $state['files_discovered'] ?? 0 ),
+				'bytes_discovered'    => (int) ( $state['bytes_discovered'] ?? 0 ),
+				'files_archived'      => (int) ( $state['files_archived'] ?? 0 ),
+				'bytes_archived'      => (int) ( $state['bytes_archived'] ?? 0 ),
+				'files_skipped'       => (int) ( $state['files_skipped'] ?? 0 ),
+				'error'               => $state['error'] ?? null,
+			)
+		);
+	}
+
 	public function render_dashboard(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -126,10 +171,14 @@ final class SiteVault_Admin {
 
 		$active_backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
 		$database_state   = null;
+		$content_state    = null;
 
 		if ( '' !== $active_backup_id ) {
+			$backup_dir     = WP_CONTENT_DIR . '/sitevault/backups/' . $active_backup_id;
 			$exporter       = new SiteVault_Database_Exporter();
-			$database_state = $exporter->get_state( WP_CONTENT_DIR . '/sitevault/backups/' . $active_backup_id );
+			$archiver       = new SiteVault_Content_Archiver();
+			$database_state = $exporter->get_state( $backup_dir );
+			$content_state  = $archiver->get_state( $backup_dir );
 		}
 
 		require SITEVAULT_PATH . 'admin/views/dashboard.php';
