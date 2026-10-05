@@ -19,7 +19,10 @@ final class SiteVault_Database_Exporter {
 
 		$dump_file  = $database_dir . '/database.sql';
 		$state_file = $database_dir . '/export-state.json';
-		$tables     = $wpdb->get_col( 'SHOW TABLES' );
+		$like       = $wpdb->esc_like( $wpdb->prefix ) . '%';
+		$tables     = $wpdb->get_col(
+			$wpdb->prepare( 'SHOW TABLES LIKE %s', $like )
+		);
 
 		if ( ! is_array( $tables ) ) {
 			return $this->error( 'Unable to read the WordPress database table list.' );
@@ -192,21 +195,13 @@ final class SiteVault_Database_Exporter {
 	}
 
 	private function sql_value( $value ): string {
+		global $wpdb;
+
 		if ( null === $value ) {
 			return 'NULL';
 		}
 
-		$value = (string) $value;
-
-		if ( '' === $value ) {
-			return "''";
-		}
-
-		if ( is_numeric( $value ) && preg_match( '/^-?(?:\\d+|\\d*\\.\\d+)(?:[eE][+-]?\\d+)?$/', $value ) ) {
-			return $value;
-		}
-
-		return '0x' . bin2hex( $value );
+		return "'" . $wpdb->_real_escape( (string) $value ) . "'";
 	}
 
 	private function quote_identifier( string $identifier ): string {
