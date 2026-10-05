@@ -41,12 +41,23 @@ final class SiteVault_Backup_Manager {
 			);
 		}
 
+		$archiver = new SiteVault_Content_Archiver();
+		$content  = $archiver->initialise( $base_dir );
+
+		if ( ! $content['success'] ) {
+			return array(
+				'success' => false,
+				'message' => $content['message'] ?? 'Unable to initialise wp-content backup.',
+			);
+		}
+
 		return array(
 			'success'   => true,
 			'backup_id' => $backup_id,
 			'path'      => $base_dir,
 			'manifest'  => $manifest,
 			'database'  => $database['state'],
+			'content'   => $content['state'],
 		);
 	}
 }
