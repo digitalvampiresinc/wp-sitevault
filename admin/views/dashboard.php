@@ -1428,30 +1428,46 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 								<td><code><?php echo esc_html( $item['backup_id'] ); ?></code></td>
 								<td><?php echo esc_html( 'needs_package' === $item['package_status'] ? 'Ready to package' : ucfirst( (string) $item['package_status'] ) ); ?></td>
 								<td><?php echo null !== $item['package_size'] ? esc_html( size_format( (int) $item['package_size'], 2 ) ) : '—'; ?></td>
-								<td><?php echo esc_html( number_format_i18n( (int) $item['files_archived'] ) ); ?></td>
 								<td>
+									<?php echo esc_html( number_format_i18n( (int) $item['files_archived'] ) ); ?>
+									<?php if ( ! empty( $item['files_discovered'] ) ) : ?>
+										<span class="sitevault-help"> / <?php echo esc_html( number_format_i18n( (int) $item['files_discovered'] ) ); ?></span>
+									<?php endif; ?>
+								</td>
+								<td>
+									<div class="sitevault-backup-actions">
 									<?php if ( ! empty( $item['downloadable'] ) ) : ?>
 										<?php
 										$item_download_url = wp_nonce_url(
-											add_query_arg(
-												array(
-													'action'    => 'sitevault_download_backup',
-													'backup_id' => $item['backup_id'],
-												),
-												admin_url( 'admin-post.php' )
-											),
+											add_query_arg( array( 'action' => 'sitevault_download_backup', 'backup_id' => $item['backup_id'] ), admin_url( 'admin-post.php' ) ),
 											'sitevault_download_backup_' . $item['backup_id']
 										);
 										?>
 										<a class="button button-small" href="<?php echo esc_url( $item_download_url ); ?>">Download</a>
-										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;margin-left:6px">
+										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 											<input type="hidden" name="action" value="sitevault_validate_existing">
 											<input type="hidden" name="backup_id" value="<?php echo esc_attr( $item['backup_id'] ); ?>">
 											<?php wp_nonce_field( 'sitevault_validate_existing' ); ?>
-											<button type="submit" class="button button-small">Validate for Restore</button>
+											<button type="submit" class="button button-small">Validate</button>
 										</form>
-									<?php else : ?>
-										<span class="sitevault-help">Unavailable</span>
+									<?php endif; ?>
+									<?php if ( ! empty( $item['resumable'] ) ) : ?>
+										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+											<input type="hidden" name="action" value="sitevault_resume_backup">
+											<input type="hidden" name="backup_id" value="<?php echo esc_attr( $item['backup_id'] ); ?>">
+											<?php wp_nonce_field( 'sitevault_resume_backup' ); ?>
+											<button type="submit" class="button button-small button-primary">Resume</button>
+										</form>
+									<?php endif; ?>
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return window.confirm('Permanently delete this SiteVault backup and its stored files?');">
+										<input type="hidden" name="action" value="sitevault_delete_backup">
+										<input type="hidden" name="backup_id" value="<?php echo esc_attr( $item['backup_id'] ); ?>">
+										<?php wp_nonce_field( 'sitevault_delete_backup' ); ?>
+										<button type="submit" class="button button-small">Delete</button>
+									</form>
+									</div>
+									<?php if ( ! empty( $item['content_error'] ) ) : ?>
+										<div class="sitevault-backup-error"><?php echo esc_html( $item['content_error'] ); ?></div>
 									<?php endif; ?>
 								</td>
 							</tr>
