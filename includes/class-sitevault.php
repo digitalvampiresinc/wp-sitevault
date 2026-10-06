@@ -23,6 +23,8 @@ final class SiteVault {
 		self::protect_runtime_storage();
 		$this->load_dependencies();
 
+		SiteVault_Backup_Worker::register();
+
 		add_action( 'init', array( $this, 'maybe_serve_cutover_lock' ), 0 );
 
 		if ( is_admin() ) {
@@ -52,6 +54,7 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-checksum-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-package-builder.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-history.php';
+		require_once SITEVAULT_PATH . 'includes/class-backup-worker.php';
 		require_once SITEVAULT_PATH . 'includes/class-import-validator.php';
 		require_once SITEVAULT_PATH . 'includes/class-import-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-restore-workspace.php';
