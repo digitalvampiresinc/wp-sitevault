@@ -131,7 +131,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 						} elseif ( $legacy_db_only ) {
 							echo 'This is an older database-only backup.';
 						} else {
-							echo 'Backup is still running — keep this page open.';
+							echo 'Backup is running in resumable server-side batches.';
 						}
 						?>
 					</strong>
@@ -142,7 +142,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 						} elseif ( $legacy_db_only ) {
 							echo 'Start a fresh backup to run the complete SiteVault pipeline.';
 						} else {
-							echo 'You may use another browser tab, but closing this SiteVault tab pauses browser-driven processing safely. Returning to this page resumes from the saved state.';
+							echo 'You may leave this page. SiteVault keeps the saved checkpoint and schedules background continuation; keeping this page open accelerates processing and shows live progress.';
 						}
 						?>
 					</p>
@@ -249,254 +249,61 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 
 		<?php if ( ! $backup_done && ! $legacy_db_only && 'failed' !== $db_status && 'failed' !== $content_status && 'failed' !== $package_status ) : ?>
 			<script>
-			(function() {
-				const dbStatusEl       = document.getElementById('sitevault-db-status');
-				const contentStatus    = document.getElementById('sitevault-content-status');
-				const contentPhase     = document.getElementById('sitevault-content-phase');
-				const tableEl          = document.getElementById('sitevault-table-progress');
-				const rowsEl           = document.getElementById('sitevault-rows-exported');
-				const dirsEl           = document.getElementById('sitevault-directories-scanned');
-				const discoveredEl     = document.getElementById('sitevault-files-discovered');
-				const archivedEl       = document.getElementById('sitevault-files-archived');
-				const bytesEl          = document.getElementById('sitevault-bytes-archived');
-				const skippedEl        = document.getElementById('sitevault-files-skipped');
-				const verifyEl         = document.getElementById('sitevault-archive-verification');
-				const entriesEl        = document.getElementById('sitevault-archive-entries');
-				const runtimeEl        = document.getElementById('sitevault-runtime-excluded');
-				const packageNameEl    = document.getElementById('sitevault-package-name');
-				const packageSizeEl    = document.getElementById('sitevault-package-size');
-				const packageVerifyEl  = document.getElementById('sitevault-package-verification');
-				const progressTrack    = document.getElementById('sitevault-progress-track');
-				const progressBar      = document.getElementById('sitevault-progress-bar');
-				const progressValue    = document.getElementById('sitevault-progress-value');
-				const currentStage     = document.getElementById('sitevault-current-stage');
-				const banner           = document.getElementById('sitevault-running-banner');
-				const bannerTitle      = document.getElementById('sitevault-running-title');
-				const bannerCopy       = document.getElementById('sitevault-running-copy');
-				const newBackupForm    = document.getElementById('sitevault-new-backup-form');
-				const downloadCurrent  = document.getElementById('sitevault-download-current');
-				let stopped            = false;
-
-				function humanBytes(bytes) {
-					const value = Number(bytes || 0);
-					if (value < 1024) return value + ' B';
-					const units = ['KB', 'MB', 'GB', 'TB'];
-					let size = value;
-					let index = -1;
-					do {
-						size /= 1024;
-						index++;
-					} while (size >= 1024 && index < units.length - 1);
-					return size.toFixed(2) + ' ' + units[index];
-				}
-
-				function setStage(id, state) {
-					const el = document.getElementById(id);
-					if (!el) return;
-					el.classList.remove('is-pending', 'is-running', 'is-complete', 'is-failed');
-					el.classList.add('is-' + state);
-					const stateEl = el.querySelector('.sitevault-stage-state');
-					if (stateEl) stateEl.textContent = state;
-				}
-
-				function setBadge(el, state) {
-					if (!el) return;
-					el.classList.remove('is-pending', 'is-running', 'is-complete', 'is-failed');
-					el.classList.add('is-' + state);
-					el.textContent = state;
-				}
-
-				function setProgress(percent, label, indeterminate) {
-					currentStage.textContent = label;
-					progressTrack.classList.toggle('is-indeterminate', !!indeterminate);
-					if (indeterminate) {
-						progressValue.textContent = 'Working…';
-					} else {
-						const safe = Math.max(0, Math.min(100, Math.round(percent)));
-						progressBar.style.width = safe + '%';
-						progressValue.textContent = safe + '%';
-					}
-				}
-
-				function setRunningBanner(title, copy, mode) {
-					banner.classList.remove('is-running', 'is-complete', 'is-warning', 'is-error');
-					banner.classList.add('is-' + mode);
-					bannerTitle.textContent = title;
-					bannerCopy.textContent = copy;
-				}
-
-				function stopWithError(message) {
-					stopped = true;
-					setRunningBanner('SiteVault processing stopped.', message || 'Unknown SiteVault error.', 'error');
-				}
-
-				async function postBatch(action, nonce) {
-					const body = new URLSearchParams();
-					body.set('action', action);
-					body.set('nonce', nonce);
-
-					const response = await fetch(ajaxurl, {
-						method: 'POST',
-						credentials: 'same-origin',
-						headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
-						body: body.toString()
-					});
-
-					return response.json();
-				}
-
-				async function runPackage() {
-					if (stopped) return;
-
-					setStage('sitevault-stage-package', 'running');
-					setProgress(92, 'Building portable package', true);
-					setRunningBanner(
-						'Creating the portable SiteVault package.',
-						'Checksums are being written and the final .sitevault file is being assembled and verified.',
-						'running'
-					);
-
-					try {
-						const payload = await postBatch(
-							'sitevault_build_package',
-							'<?php echo esc_js( wp_create_nonce( 'sitevault_build_package' ) ); ?>'
-						);
-
-						if (!payload.success) {
-							setStage('sitevault-stage-package', 'failed');
-							stopWithError(payload.data && payload.data.message ? payload.data.message : 'Package creation failed.');
+			(function(){
+				let stopped=false;
+				async function tick(){
+					if(stopped)return;
+					const body=new URLSearchParams();
+					body.set('action','sitevault_backup_worker_tick');
+					body.set('nonce','<?php echo esc_js( wp_create_nonce( 'sitevault_backup_worker_tick' ) ); ?>');
+					try{
+						const response=await fetch(ajaxurl,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:body.toString()});
+						const payload=await response.json();
+						if(!payload.success){
+							stopped=true;
+							const banner=document.getElementById('sitevault-running-banner');
+							if(banner){banner.className='sitevault-status-banner is-error';}
+							const title=document.getElementById('sitevault-running-title');
+							if(title){title.textContent='Backup paused - Resume is available.';}
+							const copy=document.getElementById('sitevault-running-copy');
+							if(copy){copy.textContent=payload.data&&payload.data.message?payload.data.message:'SiteVault stopped after an error.';}
 							return;
 						}
-
-						const data = payload.data || {};
-						stopped = true;
-						setStage('sitevault-stage-package', data.verified ? 'complete' : 'failed');
-						packageNameEl.textContent = data.package_name || 'Created';
-						packageSizeEl.textContent = humanBytes(data.package_size || 0);
-						packageVerifyEl.textContent = data.verified ? 'Passed' : 'Failed';
-						setProgress(100, 'Backup complete', false);
-						setRunningBanner(
-							'Backup complete — your portable SiteVault package is ready.',
-							'All backup, integrity and packaging stages have finished. Reload once to show the protected download action and updated Backup History.',
-							'complete'
-						);
-						newBackupForm.classList.remove('sitevault-hidden');
-						if (downloadCurrent) downloadCurrent.classList.remove('sitevault-hidden');
-					} catch (error) {
-						setStage('sitevault-stage-package', 'failed');
-						stopWithError('Package creation paused or failed. Reload this SiteVault page to retry safely.');
-					}
-				}
-
-				async function runContentBatch() {
-					if (stopped) return;
-
-					try {
-						const payload = await postBatch(
-							'sitevault_process_content_batch',
-							'<?php echo esc_js( wp_create_nonce( 'sitevault_process_content_batch' ) ); ?>'
-						);
-
-						if (!payload.success) {
-							setBadge(contentStatus, 'failed');
-							setStage('sitevault-stage-scan', 'failed');
-							setStage('sitevault-stage-archive', 'failed');
-							stopWithError(payload.data && payload.data.message ? payload.data.message : 'wp-content backup failed.');
+						const data=payload.data||{};
+						if(data.stage==='complete'||data.status==='idle'){
+							stopped=true;
+							window.location.reload();
 							return;
 						}
-
-						const data = payload.data || {};
-						setBadge(contentStatus, data.status || 'running');
-						contentPhase.textContent = data.phase || 'scanning';
-						dirsEl.textContent = Number(data.directories_scanned || 0).toLocaleString();
-						discoveredEl.textContent = Number(data.files_discovered || 0).toLocaleString();
-						archivedEl.textContent = Number(data.files_archived || 0).toLocaleString();
-						bytesEl.textContent = humanBytes(data.bytes_archived || 0);
-						skippedEl.textContent = Number(data.files_skipped || 0).toLocaleString();
-
-						if (data.phase === 'scanning' && data.status !== 'complete') {
-							setStage('sitevault-stage-scan', 'running');
-							setStage('sitevault-stage-archive', 'pending');
-							setProgress(30, 'Scanning wp-content', true);
-						} else if (data.status !== 'complete') {
-							setStage('sitevault-stage-scan', 'complete');
-							setStage('sitevault-stage-archive', 'running');
-							const total = Number(data.files_discovered || 0);
-							const done = Number(data.files_archived || 0);
-							const ratio = total > 0 ? Math.min(1, done / total) : 0;
-							setProgress(35 + (50 * ratio), 'Archiving wp-content', false);
+						if(data.stage==='database'&&data.state){
+							const s=data.state,total=(s.tables||[]).length,done=Math.min(Number(s.table_index||0),total);
+							document.getElementById('sitevault-table-progress').textContent=done+' / '+total;
+							document.getElementById('sitevault-rows-exported').textContent=Number(s.rows_exported||0).toLocaleString();
+							document.getElementById('sitevault-current-stage').textContent='Exporting database';
+							const p=total>0?Math.max(2,Math.round(25*done/total)):2;
+							document.getElementById('sitevault-progress-bar').style.width=p+'%';
+							document.getElementById('sitevault-progress-value').textContent=p+'%';
 						}
-
-						if (data.status === 'complete') {
-							setStage('sitevault-stage-scan', 'complete');
-							setStage('sitevault-stage-archive', 'complete');
-							setStage('sitevault-stage-verify', data.archive_verified ? 'complete' : 'failed');
-							verifyEl.textContent = data.archive_verified ? 'Passed' : 'Failed';
-							entriesEl.textContent = Number(data.archive_entries || 0).toLocaleString();
-							runtimeEl.textContent = data.self_backup_excluded ? 'Yes' : 'No';
-
-							if (!data.archive_verified) {
-								stopWithError('wp-content archive verification failed.');
-								return;
+						if(data.stage==='content'&&data.state){
+							const s=data.state;
+							document.getElementById('sitevault-files-discovered').textContent=Number(s.files_discovered||0).toLocaleString();
+							document.getElementById('sitevault-files-archived').textContent=Number(s.files_archived||0).toLocaleString();
+							document.getElementById('sitevault-directories-scanned').textContent=Number(s.directories_scanned||0).toLocaleString();
+							document.getElementById('sitevault-content-phase').textContent=s.phase||'scanning';
+							if(s.phase==='archiving'){
+								const total=Number(s.files_discovered||0),done=Number(s.files_archived||0),p=35+(total>0?Math.round(50*done/total):0);
+								document.getElementById('sitevault-current-stage').textContent='Archiving wp-content';
+								document.getElementById('sitevault-progress-track').classList.remove('is-indeterminate');
+								document.getElementById('sitevault-progress-bar').style.width=p+'%';
+								document.getElementById('sitevault-progress-value').textContent=p+'%';
 							}
-
-							window.setTimeout(runPackage, 250);
-							return;
 						}
-
-						window.setTimeout(runContentBatch, 250);
-					} catch (error) {
-						stopWithError('Automatic wp-content processing paused. Reload this SiteVault page to resume safely.');
+						window.setTimeout(tick,750);
+					}catch(error){
+						window.setTimeout(tick,5000);
 					}
 				}
-
-				async function runDatabaseBatch() {
-					if (stopped) return;
-
-					try {
-						const payload = await postBatch(
-							'sitevault_process_database_batch',
-							'<?php echo esc_js( wp_create_nonce( 'sitevault_process_database_batch' ) ); ?>'
-						);
-
-						if (!payload.success) {
-							setBadge(dbStatusEl, 'failed');
-							setStage('sitevault-stage-db', 'failed');
-							stopWithError(payload.data && payload.data.message ? payload.data.message : 'Database export failed.');
-							return;
-						}
-
-						const data = payload.data || {};
-						setBadge(dbStatusEl, data.status || 'running');
-						tableEl.textContent = (data.table_done || 0) + ' / ' + (data.table_total || 0);
-						rowsEl.textContent = Number(data.rows_exported || 0).toLocaleString();
-
-						const total = Number(data.table_total || 0);
-						const done = Number(data.table_done || 0);
-						const ratio = total > 0 ? Math.min(1, done / total) : 0;
-						setProgress(25 * ratio, 'Exporting database', false);
-
-						if (data.status === 'complete') {
-							setStage('sitevault-stage-db', 'complete');
-							setStage('sitevault-stage-scan', 'running');
-							setProgress(30, 'Scanning wp-content', true);
-							window.setTimeout(runContentBatch, 250);
-							return;
-						}
-
-						window.setTimeout(runDatabaseBatch, 250);
-					} catch (error) {
-						stopWithError('Automatic database processing paused. Reload this SiteVault page to resume safely.');
-					}
-				}
-
-				<?php if ( 'running' === $db_status ) : ?>
-					window.setTimeout(runDatabaseBatch, 350);
-				<?php elseif ( 'complete' === $db_status && 'running' === $content_status ) : ?>
-					window.setTimeout(runContentBatch, 350);
-				<?php elseif ( $needs_package ) : ?>
-					window.setTimeout(runPackage, 350);
-				<?php endif; ?>
+				window.setTimeout(tick,500);
 			})();
 			</script>
 		<?php endif; ?>
