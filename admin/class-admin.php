@@ -27,6 +27,8 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
 		add_action( 'wp_ajax_sitevault_build_package', array( $this, 'handle_ajax_build_package' ) );
 		add_action( 'admin_post_sitevault_download_backup', array( $this, 'handle_download_backup' ) );
+		add_action( 'admin_post_sitevault_resume_backup', array( $this, 'handle_resume_backup' ) );
+		add_action( 'admin_post_sitevault_delete_backup', array( $this, 'handle_delete_backup' ) );
 		add_action( 'admin_post_sitevault_import_validate', array( $this, 'handle_import_validate' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
@@ -57,6 +59,13 @@ final class SiteVault_Admin {
 			SITEVAULT_URL . 'admin/assets/css/admin.css',
 			array(),
 			SITEVAULT_VERSION
+		);
+		wp_enqueue_script(
+			'sitevault-admin-actions',
+			SITEVAULT_URL . 'admin/assets/js/admin-actions.js',
+			array(),
+			SITEVAULT_VERSION,
+			true
 		);
 	}
 
@@ -249,6 +258,35 @@ final class SiteVault_Admin {
 				'entries'        => (int) ( $state['entries'] ?? 0 ),
 			)
 		);
+	}
+
+	public function handle_resume_backup(): void {
+		$this->authorise_request( 'sitevault_resume_backup' );
+		$backup_id = isset( $_POST['backup_id'] ) ? sanitize_key( wp_unslash( $_POST['backup_id'] ) ) : '';
+		$history   = new SiteVault_Backup_History();
+		$backup_dir= $history->backup_directory( $backup_id );
+		if ( null === $backup_dir || ! is_dir( $backup_dir ) ) {
+			$this->redirect_with_message( 'error', 'The selected backup could not be found.' );
+		}
+		$result = ( new SiteVault_Content_Archiver() )->resume_failed( $backup_dir );
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be resumed.' );
+		}
+		update_option( 'sitevault_active_backup_id', $backup_id, false );
+		$this->redirect_with_message( 'started', 'Backup resumed from its last saved checkpoint.' );
+	}
+
+	public function handle_delete_backup(): void {
+		$this->authorise_request( 'sitevault_delete_backup' );
+		$backup_id = isset( $_POST['backup_id'] ) ? sanitize_key( wp_unslash( $_POST['backup_id'] ) ) : '';
+		$result    = ( new SiteVault_Backup_History() )->delete_backup( $backup_id );
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be deleted.' );
+		}
+		if ( $backup_id === sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) ) ) {
+			delete_option( 'sitevault_active_backup_id' );
+		}
+		$this->redirect_with_message( 'complete', 'Backup deleted.' );
 	}
 
 	public function handle_download_backup(): void {
