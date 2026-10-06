@@ -537,3 +537,49 @@ If compensation cannot complete safely:
 A successful restore or successful manual rollback does not automatically delete transaction material.
 
 Cleanup/finalisation remains a separate explicit phase.
+
+
+## Phase 9 — Restore Finalisation / Cleanup
+
+A verified successful restore or a verified completed manual rollback retains recovery material until the administrator explicitly finalises the transaction.
+
+Finalisation is deliberately separate from cutover and rollback. It requires an acknowledgement plus the exact phrase `FINALIZE`.
+
+### Allowed states
+
+Finalisation is accepted only when the filesystem transaction journal reports either:
+
+- `completed` — the verified restored site is being kept
+- `manually_rolled_back` — the verified pre-restore target site is being kept
+
+It refuses running, failed, compensated-retry, automatic-rollback and manual-recovery states. It also refuses to run while the SiteVault restore lock is active.
+
+### Cleanup ownership
+
+Finalisation removes only material that can be tied to the transaction's recorded Plan ID and generated database maps:
+
+- remaining `svstg_*` tables recorded in the promotion map
+- remaining `svbak_*` tables recorded in the rollback map
+- `restore-staging/<plan-id>`
+- `restore-plans/<plan-id>`
+- cutover rollback/quarantine/preserved-plugin working directories
+
+It does not scan for or delete arbitrary similarly named tables or unrelated filesystem paths.
+
+### Retained records
+
+Finalisation intentionally retains:
+
+- the verified pre-restore safety backup/package
+- `cutover/<plan-id>/transaction.json`
+- `cutover/<plan-id>/finalization.json`
+
+The journal records the final outcome, removed owned tables/paths, timestamps, and before/after live-site baselines.
+
+### Live-site protection and idempotency
+
+Before cleanup, SiteVault records row counts for the transaction's expected live database tables and managed live wp-content file/byte totals. After cleanup it verifies those baselines are unchanged and confirms the current SiteVault plugin is still present.
+
+A completed finalisation is idempotent: repeating the action returns the already-completed state without deleting anything further.
+
+The pre-restore safety package is not automatically deleted by finalisation.
