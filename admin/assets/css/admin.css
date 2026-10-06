@@ -52,3 +52,13 @@
 @media (max-width:600px){.sitevault-header{display:block}.sitevault-version{margin-top:10px}.sitevault-stage-grid,.sitevault-metrics{grid-template-columns:1fr}}
 
 .sitevault-plan-list{margin:8px 0 18px 22px}.sitevault-plan-list li{margin:7px 0;line-height:1.5}
+
+.sitevault-local-action-status{display:inline-flex;align-items:center;gap:8px;margin-left:10px;padding:5px 9px;border-radius:6px;font-size:12px;font-weight:600;vertical-align:middle}
+.sitevault-local-action-status.is-running{background:#f0f6fc;color:#0a4b78}
+.sitevault-local-action-status.is-complete{background:#edfaef;color:#116329}
+.sitevault-local-action-status.is-error{background:#fcf0f1;color:#8a2424}
+.sitevault-action-spinner{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:sitevault-spin .75s linear infinite}
+@keyframes sitevault-spin{to{transform:rotate(360deg)}}
+.sitevault-backup-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.sitevault-backup-actions form{display:inline-flex;align-items:center;margin:0}
+.sitevault-backup-error{max-width:420px;margin-top:5px;font-size:12px;color:#8a2424}
