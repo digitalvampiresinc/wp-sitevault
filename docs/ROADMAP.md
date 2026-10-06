@@ -32,46 +32,51 @@ Tasks:
 - [x] Restore compatibility plan foundation
 - [x] Shadow database importer foundation
 - [x] Shadow wp-content staging foundation
-- [ ] URL/path replacement
+- [x] URL/path replacement — cross-domain runtime validated
 - [x] Serialized-safe migration staging foundation
 - [x] Mandatory pre-restore snapshot foundation
 - [x] Controlled restore staging seal foundation
-- [ ] Same-domain restore runtime validation
-- [ ] Cross-domain clone runtime validation
-
-## SITEVAULT-M3 — Chunked Transfer
-
-- Chunked upload
-- Resume interrupted upload
-- Chunk integrity validation
-- Server-side assembly
-- Restore without PHP single-upload limits
-
-## SITEVAULT-M4 — Storage & Automation
-
-- Scheduled backups
-- Retention policies
-- S3-compatible adapter
-- Cloudflare R2 adapter
-- Google Drive adapter
-
-## SITEVAULT-M5 — Advanced Recovery
-
-- Incremental backups
-- Selective restore
-- Encryption
-- Standalone recovery loader
-
 - [x] Transactional live database promotion/swap foundation
-
 - [x] Transactional live wp-content promotion/swap foundation
-
 - [x] Cutover readiness seal
-
 - [x] Automatic rollback on cutover failure
 - [x] Preserve active SiteVault plugin during restore
 - [x] Filesystem-backed cutover transaction journal
-
+- [x] Cross-domain clone runtime validation — taranalia.com → ananyapandit.com
 - [x] Manual rollback to pre-restore target foundation
+- [x] Manual rollback runtime validation
 - [x] Rollback-of-rollback compensation foundation
+- [ ] Same-domain full destructive restore runtime validation
 - [ ] Restore finalisation / cleanup
+
+### Immediate continuation
+
+Start from current `main`, not an old feature branch.
+
+Next implementation target: **Restore Finalisation / Cleanup**.
+
+Reference checkpoint:
+`docs/checkpoints/SV-CPT-20261006-2322.md`
+
+## SITEVAULT-M3 — Chunked Transfer
+
+- [ ] Chunked upload
+- [ ] Resume interrupted upload
+- [ ] Chunk integrity validation
+- [ ] Server-side assembly
+- [ ] Restore without PHP single-upload limits
+
+## SITEVAULT-M4 — Storage & Automation
+
+- [ ] Scheduled backups
+- [ ] Retention policies
+- [ ] S3-compatible adapter
+- [ ] Cloudflare R2 adapter
+- [ ] Google Drive adapter
+
+## SITEVAULT-M5 — Advanced Recovery
+
+- [ ] Incremental backups
+- [ ] Selective restore
+- [ ] Encryption
+- [ ] Standalone recovery loader
