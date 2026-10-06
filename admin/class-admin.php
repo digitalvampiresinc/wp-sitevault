@@ -26,6 +26,7 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_process_database_batch', array( $this, 'handle_ajax_database_batch' ) );
 		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
 		add_action( 'wp_ajax_sitevault_build_package', array( $this, 'handle_ajax_build_package' ) );
+		add_action( 'wp_ajax_sitevault_backup_worker_tick', array( $this, 'handle_ajax_backup_worker_tick' ) );
 		add_action( 'admin_post_sitevault_download_backup', array( $this, 'handle_download_backup' ) );
 		add_action( 'admin_post_sitevault_resume_backup', array( $this, 'handle_resume_backup' ) );
 		add_action( 'admin_post_sitevault_delete_backup', array( $this, 'handle_delete_backup' ) );
@@ -91,7 +92,7 @@ final class SiteVault_Admin {
 			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be started.' );
 		}
 
-		update_option( 'sitevault_active_backup_id', $result['backup_id'], false );
+		SiteVault_Backup_Worker::schedule( $result['backup_id'] );
 
 		$this->redirect_with_message( 'started', 'Backup initialised. Database export is ready to process.' );
 	}
@@ -210,6 +211,25 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_ajax_backup_worker_tick(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'You are not allowed to process SiteVault backups.' ), 403 );
+		}
+		check_ajax_referer( 'sitevault_backup_worker_tick', 'nonce' );
+		$backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+		if ( '' === $backup_id ) {
+			wp_send_json_success( array( 'status' => 'idle', 'continue' => false ) );
+		}
+		$result = ( new SiteVault_Backup_Worker() )->tick( $backup_id );
+		if ( ! $result['success'] ) {
+			wp_send_json_error( $result, 500 );
+		}
+		if ( ! empty( $result['continue'] ) ) {
+			SiteVault_Backup_Worker::schedule( $backup_id );
+		}
+		wp_send_json_success( $result );
+	}
+
 	public function handle_ajax_build_package(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => 'You are not allowed to build SiteVault packages.' ), 403 );
@@ -272,8 +292,8 @@ final class SiteVault_Admin {
 		if ( ! $result['success'] ) {
 			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be resumed.' );
 		}
-		update_option( 'sitevault_active_backup_id', $backup_id, false );
-		$this->redirect_with_message( 'started', 'Backup resumed from its last saved checkpoint.' );
+		SiteVault_Backup_Worker::schedule( $backup_id );
+		$this->redirect_with_message( 'started', 'Backup resumed from its last saved checkpoint. Background continuation has been scheduled.' );
 	}
 
 	public function handle_delete_backup(): void {
