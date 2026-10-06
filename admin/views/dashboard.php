@@ -1302,9 +1302,9 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 	<?php if ( ! empty( $cutover_transaction ) && is_array( $cutover_transaction ) ) : ?>
 		<?php
 		$tx_status = (string) ( $cutover_transaction['status'] ?? 'unknown' );
-		$tx_ok = 'completed' === $tx_status;
-		$tx_rolled_back = 'rolled_back' === $tx_status;
-		$tx_failed = 'rollback_failed' === $tx_status;
+		$tx_ok = in_array( $tx_status, array( 'completed', 'manual_rollback_reverted' ), true );
+		$tx_rolled_back = in_array( $tx_status, array( 'rolled_back', 'manually_rolled_back' ), true );
+		$tx_failed = in_array( $tx_status, array( 'rollback_failed', 'manual_rollback_failed' ), true );
 		?>
 		<div class="sitevault-card">
 			<div class="sitevault-progress-head">
@@ -1318,14 +1318,20 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 			</div>
 
 			<?php if ( $tx_ok ) : ?>
-				<div class="sitevault-status-banner is-complete">
+				<div class="sitevault-status-banner <?php echo 'manual_rollback_reverted' === $tx_status ? 'is-warning' : 'is-complete'; ?>">
 					<span class="sitevault-status-dot"></span>
-					<div><strong>Controlled live restore completed and verified.</strong><p>The fast rollback material and pre-restore safety package remain available.</p></div>
+					<div>
+						<strong><?php echo 'manual_rollback_reverted' === $tx_status ? 'Previous rollback attempt was safely compensated.' : 'Controlled live restore completed and verified.'; ?></strong>
+						<p><?php echo 'manual_rollback_reverted' === $tx_status ? 'The successful restored state was put back automatically. Fast rollback material remains available, so you can retry with the corrected verifier.' : 'The fast rollback material and pre-restore safety package remain available.'; ?></p>
+					</div>
 				</div>
 			<?php elseif ( $tx_rolled_back ) : ?>
 				<div class="sitevault-status-banner is-warning">
 					<span class="sitevault-status-dot"></span>
-					<div><strong>Cutover failed and SiteVault automatically rolled the target back.</strong><p><?php echo esc_html( $cutover_transaction['error'] ?? '' ); ?></p></div>
+					<div>
+						<strong><?php echo 'manually_rolled_back' === $tx_status ? 'Manual rollback completed and verified.' : 'Cutover failed and SiteVault automatically rolled the target back.'; ?></strong>
+						<p><?php echo esc_html( 'manually_rolled_back' === $tx_status ? 'The original pre-restore target database and wp-content are live again.' : ( $cutover_transaction['error'] ?? '' ) ); ?></p>
+					</div>
 				</div>
 			<?php elseif ( $tx_failed ) : ?>
 				<div class="sitevault-status-banner is-error">
@@ -1353,6 +1359,42 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					<?php endif; ?>
 				</tbody>
 			</table>
+
+			<?php if ( $tx_ok && ! empty( $cutover_transaction['rollback_available'] ) ) : ?>
+				<div class="sitevault-card" style="margin-top:16px;background:#fff8f0;border-color:#dba617">
+					<h3 style="margin-top:0">Rollback to Pre-Restore Target</h3>
+					<p>This will reverse the successful SiteVault cutover and restore the original target database and wp-content retained before the restore.</p>
+					<p><strong>Login warning:</strong> the original target users/usermeta tables will become live again. Your current restored-source login may stop working immediately after rollback.</p>
+					<p>The current SiteVault plugin build is preserved during rollback. The transaction journal and pre-restore safety package remain retained.</p>
+
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return window.confirm('This will reverse the successful restore and bring back the pre-restore target site. Continue?');">
+						<input type="hidden" name="action" value="sitevault_execute_manual_rollback">
+						<?php wp_nonce_field( 'sitevault_execute_manual_rollback' ); ?>
+						<p>
+							<label>
+								<input type="checkbox" name="sitevault_rollback_ack" value="1" required>
+								I understand that this will replace the current restored site with the pre-restore target state.
+							</label>
+						</p>
+						<p style="max-width:420px">
+							<label for="sitevault-rollback-phrase"><strong>Type ROLLBACK to confirm</strong></label><br>
+							<input id="sitevault-rollback-phrase" name="sitevault_rollback_phrase" type="text" autocomplete="off" required style="width:100%;margin-top:6px">
+						</p>
+						<?php submit_button( 'Rollback to Pre-Restore Site', 'secondary', 'submit', false ); ?>
+					</form>
+				</div>
+			<?php endif; ?>
+
+			<?php if ( ! empty( $cutover_transaction['manual_rollback']['verification']['success'] ) ) : ?>
+				<table class="sitevault-detail-table" style="margin-top:16px">
+					<tbody>
+						<tr><th>Rollback verified DB tables</th><td><?php echo esc_html( number_format_i18n( (int) ( $cutover_transaction['manual_rollback']['verification']['database_tables'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Rollback verified DB rows</th><td><?php echo esc_html( number_format_i18n( (int) ( $cutover_transaction['manual_rollback']['verification']['database_rows'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Rollback verified managed files</th><td><?php echo esc_html( number_format_i18n( (int) ( $cutover_transaction['manual_rollback']['verification']['managed_files'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Current SiteVault build preserved</th><td><?php echo ! empty( $cutover_transaction['manual_rollback']['verification']['sitevault_preserved'] ) ? 'Yes' : 'No'; ?></td></tr>
+					</tbody>
+				</table>
+			<?php endif; ?>
 		</div>
 	<?php endif; ?>
 

@@ -451,3 +451,89 @@ This is expected full-site restore behaviour.
 
 After successful cutover, the administrator may need to sign in using credentials that exist in the restored source database.
 
+
+
+## Phase 8 — Manual Rollback to Pre-Restore Target
+
+A successfully completed cutover retains fast rollback material until the administrator explicitly finalises the restore.
+
+Phase 8 provides a deliberate manual reversal of a successful restore.
+
+It requires:
+
+- latest cutover transaction status = completed
+- rollback_available = true
+- original target rollback database tables still present
+- original target rollback wp-content still present
+- pre-restore safety manifest still readable
+- current restored live source tables still present
+
+The action requires:
+
+- acknowledgement checkbox
+- exact confirmation phrase `ROLLBACK`
+- browser confirmation
+
+### Manual Rollback Transaction
+
+The reversal runs in one server-side request because the WordPress users table changes again during rollback.
+
+Sequence:
+
+1. Validate the completed transaction journal and retained rollback material.
+2. Load the pre-restore safety snapshot manifest.
+3. Preserve the currently executing SiteVault plugin build.
+4. Enable the SiteVault maintenance lock.
+5. Move the current restored wp-content into the source quarantine retained by the cutover transaction.
+6. Restore the original target wp-content from fast rollback storage.
+7. Replace the rolled-back SiteVault plugin copy with the current SiteVault build.
+8. Atomically rename the current restored database back to the shadow namespace and the original target `svbak_*` tables back to their live names.
+9. Verify the rolled-back database table count and total row count against the pre-restore safety manifest.
+10. Verify managed wp-content file count and byte total against the pre-restore safety manifest, excluding SiteVault runtime and the intentionally preserved current SiteVault plugin.
+11. Release the maintenance lock only after verification succeeds.
+
+A successful result sets:
+
+- transaction status = manually_rolled_back
+- rollback_available = false
+- current SiteVault plugin preserved = true
+- original target DB/files restored and verified
+
+### Login Behaviour
+
+After a successful rollback, the original target `users` and `usermeta` tables are live again.
+
+A login inherited from the restored source site may therefore stop working. The administrator may need to sign in with the credentials that existed on the target before the restore.
+
+### Compensation if Manual Rollback Fails
+
+Manual rollback itself is transactional.
+
+If the reversal partially succeeds and a later step fails, SiteVault attempts to restore the previously successful post-cutover state.
+
+Possible compensation:
+
+- move the original target files back into rollback storage
+- move the quarantined restored-source files back into live wp-content
+- preserve the current SiteVault plugin build again
+- atomically move original target live tables back into the `svbak_*` namespace
+- promote source shadow tables back to the live target prefix
+
+If this compensation succeeds:
+
+- status = manual_rollback_reverted
+- the successful restored-source state is live again
+- maintenance lock is released
+
+If compensation cannot complete safely:
+
+- status = manual_rollback_failed
+- maintenance lock remains in place
+- the filesystem transaction journal and pre-restore safety package are retained
+- manual recovery is required
+
+### Finalisation Boundary
+
+A successful restore or successful manual rollback does not automatically delete transaction material.
+
+Cleanup/finalisation remains a separate explicit phase.

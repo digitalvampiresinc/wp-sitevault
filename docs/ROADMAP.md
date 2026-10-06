@@ -71,3 +71,7 @@ Tasks:
 - [x] Automatic rollback on cutover failure
 - [x] Preserve active SiteVault plugin during restore
 - [x] Filesystem-backed cutover transaction journal
+
+- [x] Manual rollback to pre-restore target foundation
+- [x] Rollback-of-rollback compensation foundation
+- [ ] Restore finalisation / cleanup

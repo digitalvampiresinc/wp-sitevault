@@ -180,6 +180,190 @@ final class SiteVault_Cutover_Manager {
 		}
 	}
 
+	public function execute_manual_rollback(): array {
+		$transaction = $this->get_latest_state();
+
+		if (
+			empty( $transaction ) ||
+			! in_array( $transaction['status'] ?? '', array( 'completed', 'manual_rollback_reverted' ), true )
+		) {
+			return $this->error( 'Manual rollback is available only for a completed cutover or a safely compensated rollback retry.' );
+		}
+
+		if ( empty( $transaction['rollback_available'] ) ) {
+			return $this->error( 'Fast rollback material is not marked as available for this transaction.' );
+		}
+
+		$preflight = $this->manual_rollback_preflight( $transaction );
+
+		if ( ! $preflight['success'] ) {
+			return $preflight;
+		}
+
+		$manifest = $preflight['manifest'];
+		$rollback_database_baseline = $preflight['database_baseline'];
+		$rollback_content_baseline  = $preflight['content_baseline'];
+		$manual_preserve = WP_CONTENT_DIR . '/sitevault/cutover/' . sanitize_key( (string) $transaction['plan_id'] ) . '/manual-rollback-preserved-plugin';
+		$current_plugin = $this->preserve_current_plugin( $manual_preserve );
+
+		if ( ! $current_plugin['success'] ) {
+			return $current_plugin;
+		}
+
+		$original_plugin_stats = $this->directory_stats(
+			trailingslashit( (string) $transaction['rollback_root'] ) . 'plugins/wp-sitevault'
+		);
+
+		$transaction['manual_rollback'] = array(
+			'status'                => 'running',
+			'stage'                 => 'preflight',
+			'started_at'            => gmdate( 'c' ),
+			'updated_at'            => gmdate( 'c' ),
+			'completed_at'          => null,
+			'safety_manifest_rows'  => (int) ( $manifest['payload']['database']['rows_exported'] ?? 0 ),
+			'safety_manifest_tables'=> (int) ( $manifest['payload']['database']['tables'] ?? 0 ),
+			'safety_manifest_files' => (int) ( $manifest['payload']['wp_content']['files_archived'] ?? 0 ),
+			'safety_manifest_bytes' => (int) ( $manifest['payload']['wp_content']['bytes_archived'] ?? 0 ),
+			'plugin_files_excluded' => (int) ( $original_plugin_stats['files'] ?? 0 ),
+			'plugin_bytes_excluded' => (int) ( $original_plugin_stats['bytes'] ?? 0 ),
+			'fast_rollback_database_tables' => count( $rollback_database_baseline ),
+			'fast_rollback_database_rows'   => array_sum( $rollback_database_baseline ),
+			'fast_rollback_content_files'   => (int) ( $rollback_content_baseline['files'] ?? 0 ),
+			'fast_rollback_content_bytes'   => (int) ( $rollback_content_baseline['bytes'] ?? 0 ),
+			'database_baseline'      => $rollback_database_baseline,
+			'content_baseline'       => $rollback_content_baseline,
+			'verification'          => array(),
+			'filesystem_reversed'   => false,
+			'database_reversed'     => false,
+			'compensation_attempted'=> false,
+			'compensation_success'  => null,
+			'error'                 => null,
+		);
+
+		$this->checkpoint( $transaction );
+
+		try {
+			$this->enter_maintenance_lock( $transaction );
+			$transaction['maintenance_lock'] = true;
+			$transaction['manual_rollback']['stage'] = 'filesystem';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$fs = $this->rollback_filesystem( $transaction );
+
+			if ( ! $fs['success'] ) {
+				throw new RuntimeException( $fs['message'] );
+			}
+
+			$transaction['manual_rollback']['filesystem_reversed'] = true;
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$plugin_restore = $this->restore_preserved_plugin( $manual_preserve );
+
+			if ( ! $plugin_restore['success'] ) {
+				throw new RuntimeException( $plugin_restore['message'] );
+			}
+
+			$transaction['manual_rollback']['stage'] = 'database';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$db = $this->rollback_database(
+				$transaction['database_rollback_map'] ?? array(),
+				$transaction['database_promotion_map'] ?? array()
+			);
+
+			if ( ! $db['success'] ) {
+				throw new RuntimeException( $db['message'] );
+			}
+
+			$transaction['manual_rollback']['database_reversed'] = true;
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$transaction['manual_rollback']['stage'] = 'verification';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			$verify = $this->verify_manual_rollback(
+				$transaction,
+				$rollback_database_baseline,
+				$rollback_content_baseline,
+				$original_plugin_stats
+			);
+
+			if ( ! $verify['success'] ) {
+				throw new RuntimeException( $verify['message'] );
+			}
+
+			$transaction['manual_rollback']['verification'] = $verify;
+			$transaction['manual_rollback']['status']       = 'completed';
+			$transaction['manual_rollback']['stage']        = 'complete';
+			$transaction['manual_rollback']['completed_at'] = gmdate( 'c' );
+			$transaction['manual_rollback']['updated_at']   = gmdate( 'c' );
+			$transaction['status']                          = 'manually_rolled_back';
+			$transaction['stage']                           = 'manual_rollback_complete';
+			$transaction['rollback_available']              = false;
+			$transaction['updated_at']                      = gmdate( 'c' );
+
+			$this->leave_maintenance_lock();
+			$transaction['maintenance_lock'] = false;
+			$this->checkpoint( $transaction );
+
+			return array( 'success' => true, 'state' => $transaction );
+		} catch ( Throwable $e ) {
+			$transaction['manual_rollback']['status']     = 'failed';
+			$transaction['manual_rollback']['error']      = $e->getMessage();
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+
+			$needs_compensation =
+				! empty( $transaction['manual_rollback']['filesystem_reversed'] ) ||
+				! empty( $transaction['manual_rollback']['database_reversed'] );
+
+			if ( $needs_compensation ) {
+				$transaction['manual_rollback']['compensation_attempted'] = true;
+				$transaction['manual_rollback']['stage'] = 'compensating_forward';
+				$this->checkpoint( $transaction );
+
+				$compensation = $this->compensate_failed_manual_rollback( $transaction, $manual_preserve );
+				$transaction['manual_rollback']['compensation_success'] = $compensation['success'];
+				$transaction['manual_rollback']['compensation_message'] = $compensation['message'] ?? '';
+
+				if ( $compensation['success'] ) {
+					$transaction['status'] = 'manual_rollback_reverted';
+					$transaction['stage']  = 'restored_state_recovered';
+					$this->leave_maintenance_lock();
+					$transaction['maintenance_lock'] = false;
+				} else {
+					$transaction['status'] = 'manual_rollback_failed';
+					$transaction['stage']  = 'manual_recovery_required';
+				}
+			} else {
+				$transaction['status'] = 'manual_rollback_failed';
+				$transaction['stage']  = 'manual_recovery_required';
+			}
+
+			$transaction['manual_rollback']['stage'] =
+				'manual_rollback_reverted' === $transaction['status']
+					? 'compensation_complete'
+					: 'manual_recovery_required';
+			$transaction['manual_rollback']['updated_at'] = gmdate( 'c' );
+			$transaction['updated_at'] = gmdate( 'c' );
+			$this->checkpoint( $transaction );
+
+			return array(
+				'success' => false,
+				'message' => 'Manual rollback did not complete. ' .
+					( 'manual_rollback_reverted' === $transaction['status']
+						? 'SiteVault restored the successful post-cutover state instead. '
+						: 'Automatic compensation was unavailable or incomplete; manual recovery is required. ' ) .
+					$e->getMessage(),
+				'state' => $transaction,
+			);
+		}
+	}
+
 	public function get_latest_state(): array {
 		$root = WP_CONTENT_DIR . '/sitevault/cutover';
 
@@ -668,6 +852,292 @@ final class SiteVault_Cutover_Manager {
 		}
 
 		return array( 'success' => true, 'message' => 'Filesystem rollback completed.' );
+	}
+
+	private function compensate_failed_manual_rollback( array &$transaction, string $preserved_plugin ): array {
+		$messages = array();
+		$success  = true;
+
+		if ( ! empty( $transaction['manual_rollback']['database_reversed'] ) ) {
+			$db = $this->reapply_promoted_database(
+				$transaction['database_rollback_map'] ?? array(),
+				$transaction['database_promotion_map'] ?? array()
+			);
+
+			if ( ! $db['success'] ) {
+				$success = false;
+				$messages[] = $db['message'];
+			}
+		}
+
+		if ( ! empty( $transaction['manual_rollback']['filesystem_reversed'] ) ) {
+			$fs = $this->reapply_promoted_filesystem( $transaction, $preserved_plugin );
+
+			if ( ! $fs['success'] ) {
+				$success = false;
+				$messages[] = $fs['message'];
+			}
+		}
+
+		return array(
+			'success' => $success,
+			'message' => $success ? 'Successful post-cutover state restored.' : implode( ' ', $messages ),
+		);
+	}
+
+	private function reapply_promoted_database( array $rollback_map, array $promotion_map ): array {
+		global $wpdb;
+
+		$pairs = array();
+
+		foreach ( $rollback_map as $live => $backup ) {
+			$live_exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
+			);
+			$backup_exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $backup ) )
+			);
+
+			if ( (string) $live_exists === (string) $live && empty( $backup_exists ) ) {
+				$pairs[] = $this->quote_identifier( (string) $live ) . ' TO ' . $this->quote_identifier( (string) $backup );
+			}
+		}
+
+		foreach ( $promotion_map as $shadow => $live ) {
+			$shadow_exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $shadow ) )
+			);
+
+			if ( (string) $shadow_exists === (string) $shadow ) {
+				$pairs[] = $this->quote_identifier( (string) $shadow ) . ' TO ' . $this->quote_identifier( (string) $live );
+			}
+		}
+
+		if ( empty( $pairs ) ) {
+			return $this->error( 'No database operations were available to restore the post-cutover state.' );
+		}
+
+		$result = $wpdb->query( 'RENAME TABLE ' . implode( ', ', $pairs ) );
+
+		if ( false === $result ) {
+			return $this->error( 'Unable to restore the post-cutover database state: ' . $wpdb->last_error );
+		}
+
+		return array( 'success' => true );
+	}
+
+	private function reapply_promoted_filesystem( array &$transaction, string $preserved_plugin ): array {
+		$rollback = (string) ( $transaction['rollback_root'] ?? '' );
+		$source   = (string) ( $transaction['failed_source_root'] ?? '' );
+
+		if ( ! is_dir( $source ) ) {
+			return $this->error( 'Promoted source quarantine is unavailable for compensation.' );
+		}
+
+		if ( ! is_dir( $rollback ) && ! wp_mkdir_p( $rollback ) ) {
+			return $this->error( 'Unable to recreate rollback filesystem storage during compensation.' );
+		}
+
+		foreach ( $this->top_level_entries( WP_CONTENT_DIR, array( 'sitevault' ) ) as $name ) {
+			$from = trailingslashit( WP_CONTENT_DIR ) . $name;
+			$to   = trailingslashit( $rollback ) . $name;
+
+			if ( file_exists( $to ) || is_link( $to ) ) {
+				$remove = $this->remove_tree( $to );
+				if ( ! $remove['success'] ) {
+					return $remove;
+				}
+			}
+
+			if ( ! @rename( $from, $to ) ) {
+				return $this->error( 'Unable to return pre-restore target files to rollback storage: ' . $name );
+			}
+		}
+
+		foreach ( $this->top_level_entries( $source, array() ) as $name ) {
+			$from = trailingslashit( $source ) . $name;
+			$to   = trailingslashit( WP_CONTENT_DIR ) . $name;
+
+			if ( file_exists( $to ) || is_link( $to ) ) {
+				return $this->error( 'Compensation destination unexpectedly exists: ' . $name );
+			}
+
+			if ( ! @rename( $from, $to ) ) {
+				return $this->error( 'Unable to restore promoted source files during compensation: ' . $name );
+			}
+		}
+
+		return $this->restore_preserved_plugin( $preserved_plugin );
+	}
+
+	private function manual_rollback_preflight( array $transaction ): array {
+		global $wpdb;
+
+		if ( empty( $transaction['database_rollback_map'] ) || empty( $transaction['database_promotion_map'] ) ) {
+			return $this->error( 'Database rollback map is missing from the completed transaction journal.' );
+		}
+
+		$rollback_root = (string) ( $transaction['rollback_root'] ?? '' );
+
+		if ( '' === $rollback_root || ! is_dir( $rollback_root ) ) {
+			return $this->error( 'Original target wp-content rollback directory is missing.' );
+		}
+
+		$database_baseline = array();
+
+		foreach ( $transaction['database_rollback_map'] as $live => $backup ) {
+			$exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $backup ) )
+			);
+
+			if ( (string) $exists !== (string) $backup ) {
+				return $this->error( 'Original target rollback table is missing: ' . $backup );
+			}
+
+			$count = $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->quote_identifier( (string) $backup ) );
+
+			if ( null === $count ) {
+				return $this->error( 'Unable to establish fast rollback baseline for table: ' . $backup );
+			}
+
+			$database_baseline[ (string) $live ] = (int) $count;
+		}
+
+		foreach ( $transaction['database_promotion_map'] as $shadow => $live ) {
+			$exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
+			);
+
+			if ( (string) $exists !== (string) $live ) {
+				return $this->error( 'Current restored live table is missing: ' . $live );
+			}
+		}
+
+		$manifest = $this->load_safety_manifest( (string) ( $transaction['safety_snapshot_id'] ?? '' ) );
+
+		if ( ! $manifest['success'] ) {
+			return $manifest;
+		}
+
+		$content_baseline = $this->directory_stats( $rollback_root );
+
+		return array(
+			'success'           => true,
+			'manifest'          => $manifest['manifest'],
+			'database_baseline' => $database_baseline,
+			'content_baseline'  => $content_baseline,
+		);
+	}
+
+	private function load_safety_manifest( string $backup_id ): array {
+		$backup_id = sanitize_key( $backup_id );
+
+		if ( '' === $backup_id ) {
+			return $this->error( 'Safety snapshot ID is missing from the transaction journal.' );
+		}
+
+		$file = WP_CONTENT_DIR . '/sitevault/backups/' . $backup_id . '/manifest.json';
+
+		if ( ! is_readable( $file ) ) {
+			return $this->error( 'Pre-restore safety manifest is unavailable.' );
+		}
+
+		$manifest = json_decode( (string) file_get_contents( $file ), true );
+
+		if ( ! is_array( $manifest ) || ( $manifest['backup_id'] ?? '' ) !== $backup_id ) {
+			return $this->error( 'Pre-restore safety manifest is invalid.' );
+		}
+
+		return array( 'success' => true, 'manifest' => $manifest );
+	}
+
+	private function verify_manual_rollback(
+		array $transaction,
+		array $database_baseline,
+		array $content_baseline,
+		array $original_plugin_stats
+	): array {
+		global $wpdb;
+
+		if ( empty( $database_baseline ) ) {
+			return $this->error( 'Fast rollback database baseline is empty.' );
+		}
+
+		$tables = 0;
+		$rows   = 0;
+
+		foreach ( $database_baseline as $live => $expected_rows ) {
+			$exists = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
+			);
+
+			if ( (string) $exists !== (string) $live ) {
+				return $this->error( 'Rolled-back target table is missing: ' . $live );
+			}
+
+			$count = $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->quote_identifier( (string) $live ) );
+
+			if ( null === $count ) {
+				return $this->error( 'Unable to count rows in rolled-back target table: ' . $live );
+			}
+
+			if ( (int) $count !== (int) $expected_rows ) {
+				return $this->error(
+					'Rolled-back table does not match its retained fast-rollback baseline: ' .
+					$live . '. Expected ' . (int) $expected_rows . ' rows, found ' . (int) $count . '.'
+				);
+			}
+
+			$tables++;
+			$rows += (int) $count;
+		}
+
+		$stats = $this->managed_live_content_stats();
+		$expected_files = max(
+			0,
+			(int) ( $content_baseline['files'] ?? 0 ) -
+			(int) ( $original_plugin_stats['files'] ?? 0 )
+		);
+		$expected_bytes = max(
+			0,
+			(int) ( $content_baseline['bytes'] ?? 0 ) -
+			(int) ( $original_plugin_stats['bytes'] ?? 0 )
+		);
+
+		if ( $stats['files'] !== $expected_files || $stats['bytes'] !== $expected_bytes ) {
+			return $this->error(
+				'Rolled-back wp-content does not match the retained fast-rollback filesystem baseline after excluding the preserved SiteVault plugin.'
+			);
+		}
+
+		return array(
+			'success'                  => true,
+			'database_tables'          => $tables,
+			'database_rows'            => $rows,
+			'managed_files'            => $stats['files'],
+			'managed_bytes'            => $stats['bytes'],
+			'sitevault_preserved'      => true,
+			'verification_baseline'    => 'retained-fast-rollback-state',
+			'safety_snapshot_reference'=> (string) ( $transaction['safety_snapshot_id'] ?? '' ),
+		);
+	}
+
+	private function restore_preserved_plugin( string $preserved ): array {
+		$live = WP_CONTENT_DIR . '/plugins/wp-sitevault';
+
+		if ( file_exists( $live ) || is_link( $live ) ) {
+			$remove = $this->remove_tree( $live );
+
+			if ( ! $remove['success'] ) {
+				return $remove;
+			}
+		}
+
+		if ( ! is_dir( WP_CONTENT_DIR . '/plugins' ) && ! wp_mkdir_p( WP_CONTENT_DIR . '/plugins' ) ) {
+			return $this->error( 'Unable to recreate the live plugins directory during rollback.' );
+		}
+
+		return $this->copy_tree( $preserved, $live );
 	}
 
 	private function preserve_current_plugin( string $destination ): array {

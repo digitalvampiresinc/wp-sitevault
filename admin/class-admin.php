@@ -44,6 +44,7 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_content_stage_verify', array( $this, 'handle_ajax_content_stage_verify' ) );
 		add_action( 'admin_post_sitevault_seal_cutover_readiness', array( $this, 'handle_seal_cutover_readiness' ) );
 		add_action( 'admin_post_sitevault_execute_cutover', array( $this, 'handle_execute_cutover' ) );
+		add_action( 'admin_post_sitevault_execute_manual_rollback', array( $this, 'handle_execute_manual_rollback' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -664,6 +665,46 @@ final class SiteVault_Admin {
 		wp_die(
 			wp_kses_post( $message ),
 			'SiteVault restore complete',
+			array( 'response' => 200 )
+		);
+	}
+
+	public function handle_execute_manual_rollback(): void {
+		$this->authorise_request( 'sitevault_execute_manual_rollback' );
+
+		$phrase = isset( $_POST['sitevault_rollback_phrase'] )
+			? strtoupper( trim( sanitize_text_field( wp_unslash( $_POST['sitevault_rollback_phrase'] ) ) ) )
+			: '';
+		$acknowledged = isset( $_POST['sitevault_rollback_ack'] ) && '1' === (string) $_POST['sitevault_rollback_ack'];
+
+		if ( 'ROLLBACK' !== $phrase || ! $acknowledged ) {
+			$this->redirect_with_message(
+				'error',
+				'Manual rollback was not started. Tick the acknowledgement and type ROLLBACK exactly.'
+			);
+		}
+
+		$manager = new SiteVault_Cutover_Manager();
+		$result  = $manager->execute_manual_rollback();
+
+		if ( ! $result['success'] ) {
+			wp_die(
+				esc_html( $result['message'] ?? 'Manual rollback did not complete safely.' ),
+				'SiteVault rollback recovery required',
+				array( 'response' => 500 )
+			);
+		}
+
+		$target = esc_url( (string) ( $result['state']['target_home_url'] ?? home_url( '/' ) ) );
+		$message = '<h1>SiteVault rollback completed</h1>';
+		$message .= '<p>The original pre-restore target database and wp-content were restored and verified.</p>';
+		$message .= '<p><strong>Important:</strong> the original target users table is live again, so your current restored-source login may no longer be valid.</p>';
+		$message .= '<p><a class="button button-primary" href="' . $target . '">Open rolled-back website</a></p>';
+		$message .= '<p>The SiteVault transaction journal and safety package remain retained for audit/recovery.</p>';
+
+		wp_die(
+			wp_kses_post( $message ),
+			'SiteVault rollback complete',
 			array( 'response' => 200 )
 		);
 	}
