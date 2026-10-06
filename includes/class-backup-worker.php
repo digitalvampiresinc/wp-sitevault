@@ -86,19 +86,18 @@ final class SiteVault_Backup_Worker {
 		if ( is_file( $file ) && ( time() - (int) @filemtime( $file ) ) < self::LOCK_TTL ) {
 			return false;
 		}
-		$handle = @fopen( $file, 'c' );
-		if ( false === $handle ) {
-			return false;
+		$created = @fopen( $file, 'x' );
+		if ( false === $created ) {
+			if ( is_file( $file ) && ( time() - (int) @filemtime( $file ) ) >= self::LOCK_TTL ) {
+				@unlink( $file );
+				$created = @fopen( $file, 'x' );
+			}
+			if ( false === $created ) {
+				return false;
+			}
 		}
-		if ( ! @flock( $handle, LOCK_EX | LOCK_NB ) ) {
-			fclose( $handle );
-			return false;
-		}
-		ftruncate( $handle, 0 );
-		fwrite( $handle, (string) time() );
-		fflush( $handle );
-		flock( $handle, LOCK_UN );
-		fclose( $handle );
+		fwrite( $created, (string) time() );
+		fclose( $created );
 		return true;
 	}
 }
