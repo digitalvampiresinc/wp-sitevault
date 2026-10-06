@@ -82,6 +82,45 @@ final class SiteVault_Content_Archiver {
 		return $this->load_state( trailingslashit( $backup_dir ) . 'content/archive-state.json' );
 	}
 
+	public function resume_failed( string $backup_dir ): array {
+		$state_file = trailingslashit( $backup_dir ) . 'content/archive-state.json';
+		$state      = $this->load_state( $state_file );
+
+		if ( ! $state ) {
+			return $this->error( 'wp-content archive state could not be loaded.' );
+		}
+
+		if ( 'failed' !== ( $state['status'] ?? '' ) ) {
+			return array( 'success' => true, 'state' => $state );
+		}
+
+		$phase = (string) ( $state['phase'] ?? '' );
+		if ( ! in_array( $phase, array( 'scanning', 'archiving' ), true ) ) {
+			return $this->error( 'This failed backup does not contain a resumable wp-content phase.', $state );
+		}
+
+		if ( 'archiving' === $phase ) {
+			if ( empty( $state['inventory_file'] ) || ! is_readable( $state['inventory_file'] ) ) {
+				return $this->error( 'The backup inventory required for resume is missing.', $state );
+			}
+			if ( empty( $state['archive_file'] ) || ! is_readable( $state['archive_file'] ) ) {
+				return $this->error( 'The partial wp-content archive required for resume is missing.', $state );
+			}
+		}
+
+		$state['status']     = 'running';
+		$state['error']      = null;
+		$state['resumed_at'] = gmdate( 'c' );
+		$state['updated_at'] = gmdate( 'c' );
+		$state['resume_count'] = (int) ( $state['resume_count'] ?? 0 ) + 1;
+
+		if ( ! $this->save_state( $state_file, $state ) ) {
+			return $this->error( 'Unable to save resumed wp-content archive state.', $state );
+		}
+
+		return array( 'success' => true, 'state' => $state );
+	}
+
 	private function process_scan_batch( string $state_file, array $state ): array {
 		$root      = wp_normalize_path( WP_CONTENT_DIR );
 		$processed = 0;
