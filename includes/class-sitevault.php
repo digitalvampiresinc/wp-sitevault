@@ -61,6 +61,7 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-content-stager.php';
 		require_once SITEVAULT_PATH . 'includes/class-cutover-readiness.php';
 		require_once SITEVAULT_PATH . 'includes/class-cutover-manager.php';
+		require_once SITEVAULT_PATH . 'includes/class-restore-finalizer.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-manager.php';
 		require_once SITEVAULT_PATH . 'admin/class-admin.php';
 	}

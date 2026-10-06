@@ -1305,6 +1305,8 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 		$tx_ok = in_array( $tx_status, array( 'completed', 'manual_rollback_reverted' ), true );
 		$tx_rolled_back = in_array( $tx_status, array( 'rolled_back', 'manually_rolled_back' ), true );
 		$tx_failed = in_array( $tx_status, array( 'rollback_failed', 'manual_rollback_failed' ), true );
+		$tx_finalized = ! empty( $cutover_transaction['finalization']['completed'] );
+		$tx_can_finalize = in_array( $tx_status, array( 'completed', 'manually_rolled_back' ), true ) && ! $tx_finalized;
 		?>
 		<div class="sitevault-card">
 			<div class="sitevault-progress-head">
@@ -1395,6 +1397,43 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					</tbody>
 				</table>
 			<?php endif; ?>
+
+			<?php if ( $tx_finalized ) : ?>
+				<div class="sitevault-status-banner is-complete" style="margin-top:16px">
+					<span class="sitevault-status-dot"></span>
+					<div>
+						<strong>Restore transaction finalised.</strong>
+						<p>Temporary restore and fast rollback material has been removed. The verified pre-restore safety backup and filesystem audit journal remain retained.</p>
+					</div>
+				</div>
+				<table class="sitevault-detail-table" style="margin-top:16px">
+					<tbody>
+						<tr><th>Finalised at</th><td><?php echo esc_html( $cutover_transaction['finalization']['completed_at'] ?? '—' ); ?></td></tr>
+						<tr><th>Final outcome</th><td><?php echo esc_html( str_replace( '_', ' ', $cutover_transaction['finalization']['outcome'] ?? '—' ) ); ?></td></tr>
+						<tr><th>Temporary DB tables removed</th><td><?php echo esc_html( number_format_i18n( count( $cutover_transaction['finalization']['database_tables_removed'] ?? array() ) ) ); ?></td></tr>
+						<tr><th>Temporary paths removed</th><td><?php echo esc_html( number_format_i18n( count( $cutover_transaction['finalization']['paths_removed'] ?? array() ) ) ); ?></td></tr>
+						<tr><th>Safety package retained</th><td><?php echo ! empty( $cutover_transaction['finalization']['safety_package_retained'] ) ? 'Yes' : 'No'; ?></td></tr>
+						<tr><th>Current SiteVault build preserved</th><td><?php echo ! empty( $cutover_transaction['finalization']['sitevault_plugin_preserved'] ) ? 'Yes' : 'No'; ?></td></tr>
+					</tbody>
+				</table>
+			<?php elseif ( $tx_can_finalize ) : ?>
+				<div class="sitevault-card" style="margin-top:16px;background:#fff8f0;border-color:#dba617">
+					<h3 style="margin-top:0">Finalise Restore Transaction</h3>
+					<p>This permanently removes SiteVault's temporary restore staging and fast rollback material for this transaction. The pre-restore safety backup and transaction audit journal are retained.</p>
+					<p><strong>After finalisation, fast rollback from this transaction is no longer available.</strong> Use this only after you have checked the live site and decided to keep its current state.</p>
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return window.confirm('Finalisation permanently removes the fast rollback material for this restore transaction. Continue?');">
+						<input type="hidden" name="action" value="sitevault_finalize_restore">
+						<?php wp_nonce_field( 'sitevault_finalize_restore' ); ?>
+						<p><label><input type="checkbox" name="sitevault_finalize_ack" value="1" required> I have checked the current site and understand that fast rollback material will be removed.</label></p>
+						<p style="max-width:420px">
+							<label for="sitevault-finalize-phrase"><strong>Type FINALIZE to confirm</strong></label><br>
+							<input id="sitevault-finalize-phrase" name="sitevault_finalize_phrase" type="text" autocomplete="off" required style="width:100%;margin-top:6px">
+						</p>
+						<?php submit_button( 'Finalise Restore Transaction', 'secondary', 'submit', false ); ?>
+					</form>
+				</div>
+			<?php endif; ?>
+
 		</div>
 	<?php endif; ?>
 
