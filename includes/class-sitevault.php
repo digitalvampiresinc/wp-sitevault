@@ -52,6 +52,7 @@ final class SiteVault {
 		require_once SITEVAULT_PATH . 'includes/class-checksum-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-package-builder.php';
 		require_once SITEVAULT_PATH . 'includes/class-backup-history.php';
+		require_once SITEVAULT_PATH . 'includes/class-backup-lifecycle.php';
 		require_once SITEVAULT_PATH . 'includes/class-import-validator.php';
 		require_once SITEVAULT_PATH . 'includes/class-import-manager.php';
 		require_once SITEVAULT_PATH . 'includes/class-restore-workspace.php';
