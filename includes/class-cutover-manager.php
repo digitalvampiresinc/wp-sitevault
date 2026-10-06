@@ -183,8 +183,11 @@ final class SiteVault_Cutover_Manager {
 	public function execute_manual_rollback(): array {
 		$transaction = $this->get_latest_state();
 
-		if ( empty( $transaction ) || 'completed' !== ( $transaction['status'] ?? '' ) ) {
-			return $this->error( 'Manual rollback is available only for a completed SiteVault cutover.' );
+		if (
+			empty( $transaction ) ||
+			! in_array( $transaction['status'] ?? '', array( 'completed', 'manual_rollback_reverted' ), true )
+		) {
+			return $this->error( 'Manual rollback is available only for a completed cutover or a safely compensated rollback retry.' );
 		}
 
 		if ( empty( $transaction['rollback_available'] ) ) {
@@ -198,6 +201,8 @@ final class SiteVault_Cutover_Manager {
 		}
 
 		$manifest = $preflight['manifest'];
+		$rollback_database_baseline = $preflight['database_baseline'];
+		$rollback_content_baseline  = $preflight['content_baseline'];
 		$manual_preserve = WP_CONTENT_DIR . '/sitevault/cutover/' . sanitize_key( (string) $transaction['plan_id'] ) . '/manual-rollback-preserved-plugin';
 		$current_plugin = $this->preserve_current_plugin( $manual_preserve );
 
@@ -221,6 +226,12 @@ final class SiteVault_Cutover_Manager {
 			'safety_manifest_bytes' => (int) ( $manifest['payload']['wp_content']['bytes_archived'] ?? 0 ),
 			'plugin_files_excluded' => (int) ( $original_plugin_stats['files'] ?? 0 ),
 			'plugin_bytes_excluded' => (int) ( $original_plugin_stats['bytes'] ?? 0 ),
+			'fast_rollback_database_tables' => count( $rollback_database_baseline ),
+			'fast_rollback_database_rows'   => array_sum( $rollback_database_baseline ),
+			'fast_rollback_content_files'   => (int) ( $rollback_content_baseline['files'] ?? 0 ),
+			'fast_rollback_content_bytes'   => (int) ( $rollback_content_baseline['bytes'] ?? 0 ),
+			'database_baseline'      => $rollback_database_baseline,
+			'content_baseline'       => $rollback_content_baseline,
 			'verification'          => array(),
 			'filesystem_reversed'   => false,
 			'database_reversed'     => false,
@@ -277,7 +288,8 @@ final class SiteVault_Cutover_Manager {
 
 			$verify = $this->verify_manual_rollback(
 				$transaction,
-				$manifest,
+				$rollback_database_baseline,
+				$rollback_content_baseline,
 				$original_plugin_stats
 			);
 
@@ -971,6 +983,8 @@ final class SiteVault_Cutover_Manager {
 			return $this->error( 'Original target wp-content rollback directory is missing.' );
 		}
 
+		$database_baseline = array();
+
 		foreach ( $transaction['database_rollback_map'] as $live => $backup ) {
 			$exists = $wpdb->get_var(
 				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $backup ) )
@@ -979,6 +993,14 @@ final class SiteVault_Cutover_Manager {
 			if ( (string) $exists !== (string) $backup ) {
 				return $this->error( 'Original target rollback table is missing: ' . $backup );
 			}
+
+			$count = $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $this->quote_identifier( (string) $backup ) );
+
+			if ( null === $count ) {
+				return $this->error( 'Unable to establish fast rollback baseline for table: ' . $backup );
+			}
+
+			$database_baseline[ (string) $live ] = (int) $count;
 		}
 
 		foreach ( $transaction['database_promotion_map'] as $shadow => $live ) {
@@ -997,9 +1019,13 @@ final class SiteVault_Cutover_Manager {
 			return $manifest;
 		}
 
+		$content_baseline = $this->directory_stats( $rollback_root );
+
 		return array(
-			'success'  => true,
-			'manifest' => $manifest['manifest'],
+			'success'           => true,
+			'manifest'          => $manifest['manifest'],
+			'database_baseline' => $database_baseline,
+			'content_baseline'  => $content_baseline,
 		);
 	}
 
@@ -1025,17 +1051,22 @@ final class SiteVault_Cutover_Manager {
 		return array( 'success' => true, 'manifest' => $manifest );
 	}
 
-	private function verify_manual_rollback( array $transaction, array $manifest, array $original_plugin_stats ): array {
+	private function verify_manual_rollback(
+		array $transaction,
+		array $database_baseline,
+		array $content_baseline,
+		array $original_plugin_stats
+	): array {
 		global $wpdb;
 
-		$rollback_map = is_array( $transaction['database_rollback_map'] ?? null )
-			? $transaction['database_rollback_map']
-			: array();
+		if ( empty( $database_baseline ) ) {
+			return $this->error( 'Fast rollback database baseline is empty.' );
+		}
 
 		$tables = 0;
 		$rows   = 0;
 
-		foreach ( array_keys( $rollback_map ) as $live ) {
+		foreach ( $database_baseline as $live => $expected_rows ) {
 			$exists = $wpdb->get_var(
 				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( (string) $live ) )
 			);
@@ -1050,46 +1081,44 @@ final class SiteVault_Cutover_Manager {
 				return $this->error( 'Unable to count rows in rolled-back target table: ' . $live );
 			}
 
+			if ( (int) $count !== (int) $expected_rows ) {
+				return $this->error(
+					'Rolled-back table does not match its retained fast-rollback baseline: ' .
+					$live . '. Expected ' . (int) $expected_rows . ' rows, found ' . (int) $count . '.'
+				);
+			}
+
 			$tables++;
 			$rows += (int) $count;
-		}
-
-		$expected_tables = (int) ( $manifest['payload']['database']['tables'] ?? 0 );
-		$expected_rows   = (int) ( $manifest['payload']['database']['rows_exported'] ?? 0 );
-
-		if ( $tables !== $expected_tables || $rows !== $expected_rows ) {
-			return $this->error(
-				'Rolled-back database does not match the pre-restore safety snapshot. Expected ' .
-				$expected_tables . ' tables / ' . $expected_rows . ' rows, found ' .
-				$tables . ' tables / ' . $rows . ' rows.'
-			);
 		}
 
 		$stats = $this->managed_live_content_stats();
 		$expected_files = max(
 			0,
-			(int) ( $manifest['payload']['wp_content']['files_archived'] ?? 0 ) -
+			(int) ( $content_baseline['files'] ?? 0 ) -
 			(int) ( $original_plugin_stats['files'] ?? 0 )
 		);
 		$expected_bytes = max(
 			0,
-			(int) ( $manifest['payload']['wp_content']['bytes_archived'] ?? 0 ) -
+			(int) ( $content_baseline['bytes'] ?? 0 ) -
 			(int) ( $original_plugin_stats['bytes'] ?? 0 )
 		);
 
 		if ( $stats['files'] !== $expected_files || $stats['bytes'] !== $expected_bytes ) {
 			return $this->error(
-				'Rolled-back wp-content does not match the pre-restore safety snapshot after excluding the preserved SiteVault plugin.'
+				'Rolled-back wp-content does not match the retained fast-rollback filesystem baseline after excluding the preserved SiteVault plugin.'
 			);
 		}
 
 		return array(
-			'success'         => true,
-			'database_tables' => $tables,
-			'database_rows'   => $rows,
-			'managed_files'   => $stats['files'],
-			'managed_bytes'   => $stats['bytes'],
-			'sitevault_preserved' => true,
+			'success'                  => true,
+			'database_tables'          => $tables,
+			'database_rows'            => $rows,
+			'managed_files'            => $stats['files'],
+			'managed_bytes'            => $stats['bytes'],
+			'sitevault_preserved'      => true,
+			'verification_baseline'    => 'retained-fast-rollback-state',
+			'safety_snapshot_reference'=> (string) ( $transaction['safety_snapshot_id'] ?? '' ),
 		);
 	}
 
