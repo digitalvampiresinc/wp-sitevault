@@ -45,6 +45,7 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_seal_cutover_readiness', array( $this, 'handle_seal_cutover_readiness' ) );
 		add_action( 'admin_post_sitevault_execute_cutover', array( $this, 'handle_execute_cutover' ) );
 		add_action( 'admin_post_sitevault_execute_manual_rollback', array( $this, 'handle_execute_manual_rollback' ) );
+		add_action( 'admin_post_sitevault_finalize_restore', array( $this, 'handle_finalize_restore' ) );
 	}
 
 	public function enqueue_assets( string $hook ): void {
@@ -706,6 +707,34 @@ final class SiteVault_Admin {
 			wp_kses_post( $message ),
 			'SiteVault rollback complete',
 			array( 'response' => 200 )
+		);
+	}
+
+
+	public function handle_finalize_restore(): void {
+		$this->authorise_request( 'sitevault_finalize_restore' );
+
+		$phrase = isset( $_POST['sitevault_finalize_phrase'] )
+			? strtoupper( trim( sanitize_text_field( wp_unslash( $_POST['sitevault_finalize_phrase'] ) ) ) )
+			: '';
+		$acknowledged = isset( $_POST['sitevault_finalize_ack'] ) && '1' === (string) $_POST['sitevault_finalize_ack'];
+
+		if ( 'FINALIZE' !== $phrase || ! $acknowledged ) {
+			$this->redirect_with_message(
+				'error',
+				'Restore finalisation was not started. Tick the acknowledgement and type FINALIZE exactly.'
+			);
+		}
+
+		$result = ( new SiteVault_Restore_Finalizer() )->finalize();
+
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Restore finalisation did not complete safely.' );
+		}
+
+		$this->redirect_with_message(
+			'complete',
+			$result['message'] ?? 'Restore finalisation completed. Temporary restore material was removed and audit history was retained.'
 		);
 	}
 
