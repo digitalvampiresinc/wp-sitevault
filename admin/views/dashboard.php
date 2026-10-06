@@ -1302,7 +1302,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 	<?php if ( ! empty( $cutover_transaction ) && is_array( $cutover_transaction ) ) : ?>
 		<?php
 		$tx_status = (string) ( $cutover_transaction['status'] ?? 'unknown' );
-		$tx_ok = 'completed' === $tx_status;
+		$tx_ok = in_array( $tx_status, array( 'completed', 'manual_rollback_reverted' ), true );
 		$tx_rolled_back = in_array( $tx_status, array( 'rolled_back', 'manually_rolled_back' ), true );
 		$tx_failed = in_array( $tx_status, array( 'rollback_failed', 'manual_rollback_failed' ), true );
 		?>
@@ -1318,9 +1318,12 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 			</div>
 
 			<?php if ( $tx_ok ) : ?>
-				<div class="sitevault-status-banner is-complete">
+				<div class="sitevault-status-banner <?php echo 'manual_rollback_reverted' === $tx_status ? 'is-warning' : 'is-complete'; ?>">
 					<span class="sitevault-status-dot"></span>
-					<div><strong>Controlled live restore completed and verified.</strong><p>The fast rollback material and pre-restore safety package remain available.</p></div>
+					<div>
+						<strong><?php echo 'manual_rollback_reverted' === $tx_status ? 'Previous rollback attempt was safely compensated.' : 'Controlled live restore completed and verified.'; ?></strong>
+						<p><?php echo 'manual_rollback_reverted' === $tx_status ? 'The successful restored state was put back automatically. Fast rollback material remains available, so you can retry with the corrected verifier.' : 'The fast rollback material and pre-restore safety package remain available.'; ?></p>
+					</div>
 				</div>
 			<?php elseif ( $tx_rolled_back ) : ?>
 				<div class="sitevault-status-banner is-warning">
