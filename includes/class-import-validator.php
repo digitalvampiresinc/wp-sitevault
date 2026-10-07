@@ -6,12 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class SiteVault_Import_Validator {
 
-	private const REQUIRED_ENTRIES = array(
-		'manifest.json',
-		'database/database.sql',
-		'content/wp-content.zip',
-		'checksums/sha256.json',
-	);
+	private const V1_REQUIRED_ENTRIES = array( 'manifest.json', 'database/database.sql', 'content/wp-content.zip', 'checksums/sha256.json' );
 
 	public function validate( string $package_file, ?string $import_id = null ): array {
 		if ( ! class_exists( 'ZipArchive' ) ) {
@@ -49,15 +44,6 @@ final class SiteVault_Import_Validator {
 			$entries[] = $normalized;
 		}
 
-		sort( $entries );
-		$required = self::REQUIRED_ENTRIES;
-		sort( $required );
-
-		if ( $entries !== $required ) {
-			$zip->close();
-			return $this->error( 'Package structure is invalid. A SiteVault V1 package must contain exactly the four required payload entries.' );
-		}
-
 		$manifest_raw  = $zip->getFromName( 'manifest.json' );
 		$checksums_raw = $zip->getFromName( 'checksums/sha256.json' );
 
@@ -74,21 +60,37 @@ final class SiteVault_Import_Validator {
 			return $this->error( 'Manifest or checksum metadata is invalid JSON.' );
 		}
 
-		if ( 'sitevault' !== ( $manifest['format'] ?? '' ) || 1 !== (int) ( $manifest['format_version'] ?? 0 ) ) {
+		$format_version = (int) ( $manifest['format_version'] ?? 0 );
+		if ( 'sitevault' !== ( $manifest['format'] ?? '' ) || ! in_array( $format_version, array( 1, 2 ), true ) ) {
 			$zip->close();
 			return $this->error( 'Unsupported SiteVault package format or format version.' );
 		}
+		$required = self::V1_REQUIRED_ENTRIES;
+		if ( 2 === $format_version ) {
+			$required = array( 'manifest.json', 'database/database.sql', 'checksums/sha256.json' );
+			foreach ( (array) ( $manifest['payload']['wp_content']['chunks'] ?? array() ) as $chunk ) {
+				$file = (string) ( $chunk['file'] ?? '' );
+				if ( '' === $file || 0 !== strpos( $file, 'content/wp-content-part-' ) || ! str_ends_with( $file, '.zip' ) ) {
+					$zip->close(); return $this->error( 'Invalid V2 content chunk metadata.' );
+				}
+				$required[] = $file;
+			}
+			if ( count( $required ) < 4 ) { $zip->close(); return $this->error( 'V2 package contains no content chunks.' ); }
+		}
+		sort( $entries ); sort( $required );
+		if ( $entries !== $required ) { $zip->close(); return $this->error( 'Package structure does not match its SiteVault manifest.' ); }
 
 		if ( 'sha256' !== strtolower( (string) ( $checksums['algorithm'] ?? '' ) ) ) {
 			$zip->close();
 			return $this->error( 'Unsupported checksum algorithm in package.' );
 		}
 
-		$payloads = array(
-			'manifest.json',
-			'database/database.sql',
-			'content/wp-content.zip',
-		);
+		$payloads = array( 'manifest.json', 'database/database.sql' );
+		if ( 1 === $format_version ) {
+			$payloads[] = 'content/wp-content.zip';
+		} else {
+			foreach ( (array) ( $manifest['payload']['wp_content']['chunks'] ?? array() ) as $chunk ) $payloads[] = (string) $chunk['file'];
+		}
 
 		$verified_payloads = array();
 
@@ -123,7 +125,7 @@ final class SiteVault_Import_Validator {
 			);
 		}
 
-		$nested = $this->validate_nested_content( $zip, $manifest, $import_id );
+		$nested = 1 === $format_version ? $this->validate_nested_content( $zip, $manifest, $import_id ) : $this->validate_chunked_content( $zip, $manifest );
 		$zip->close();
 
 		if ( ! $nested['success'] ) {
@@ -280,6 +282,29 @@ final class SiteVault_Import_Validator {
 			'entries'          => $entries,
 			'runtime_excluded' => true,
 		);
+	}
+
+	private function validate_chunked_content( ZipArchive $outer, array $manifest ): array {
+		$total = 0;
+		foreach ( (array) ( $manifest['payload']['wp_content']['chunks'] ?? array() ) as $chunk ) {
+			$file = (string) ( $chunk['file'] ?? '' );
+			$stream = $outer->getStream( $file );
+			if ( false === $stream ) return $this->error( 'Unable to open V2 content chunk: ' . $file );
+			$tmp = wp_tempnam( basename( $file ) );
+			$out = $tmp ? fopen( $tmp, 'wb' ) : false;
+			if ( false === $out ) { fclose( $stream ); return $this->error( 'Unable to create temporary V2 chunk validation file.' ); }
+			stream_copy_to_stream( $stream, $out ); fclose( $stream ); fclose( $out );
+			$nested = new ZipArchive(); $open = $nested->open( $tmp );
+			if ( true !== $open ) { @unlink($tmp); return $this->error( 'V2 content chunk is corrupt: ' . $file ); }
+			for ( $i=0; $i<$nested->numFiles; $i++ ) {
+				$name=ltrim(wp_normalize_path((string)$nested->getNameIndex($i)),'/');
+				if($this->is_unsafe_path($name)||0!==strpos($name,'wp-content/')||'wp-content/sitevault'===rtrim($name,'/')||0===strpos($name,'wp-content/sitevault/')){$nested->close();@unlink($tmp);return $this->error('Unsafe path detected inside V2 content chunk.');}
+			}
+			$total += (int)$nested->numFiles; $nested->close(); @unlink($tmp);
+		}
+		$expected=(int)($manifest['payload']['wp_content']['files_archived']??0);
+		if($expected>0&&$total!==$expected)return $this->error('V2 content chunk entry count does not match the manifest.');
+		return array('success'=>true,'entries'=>$total,'runtime_excluded'=>true);
 	}
 
 	private function hash_zip_entry( ZipArchive $zip, string $entry ): array {
