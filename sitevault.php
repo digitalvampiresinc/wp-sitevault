@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SiteVault – Backup, Restore & Migration
  * Description: Reliable WordPress backup, restore and migration with chunked processing and portable backup packages.
- * Version: 0.1.0-dev
+ * Version: 0.1.1-dev
  * Author: Digital Vampires Inc.
  * Text Domain: sitevault
  * Requires at least: 6.0
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SITEVAULT_VERSION', '0.1.0-dev' );
+define( 'SITEVAULT_VERSION', '0.1.1-dev' );
 define( 'SITEVAULT_FILE', __FILE__ );
 define( 'SITEVAULT_PATH', plugin_dir_path( __FILE__ ) );
 define( 'SITEVAULT_URL', plugin_dir_url( __FILE__ ) );
