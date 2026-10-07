@@ -83,7 +83,7 @@ button.addEventListener('click',async function(){
         status.textContent='Restore plan prepared successfully.';
         status.className='sitevault-local-action-status is-complete';
         done=true;
-        setTimeout(()=>window.location.reload(),700);
+        setTimeout(()=>{window.location.href=window.location.pathname+window.location.search+'#sitevault-restore-compatibility';window.location.reload();},700);
         break;
       }
       await new Promise(resolve=>setTimeout(resolve,250));
