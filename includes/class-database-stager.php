@@ -286,6 +286,8 @@ final class SiteVault_Database_Stager {
 				'rows_changed'      => 0,
 				'cells_changed'     => 0,
 				'replacements'      => 0,
+				'skipped_values'    => 0,
+				'warnings'          => array(),
 			);
 		}
 
@@ -367,6 +369,23 @@ final class SiteVault_Database_Stager {
 
 				if ( ! $transformed['success'] ) {
 					return $this->fail( $state, $transformed['message'] . ' Table: ' . $table . ', column: ' . $column );
+				}
+
+				if ( ! empty( $transformed['skipped'] ) ) {
+					$state['transform_state']['skipped_values']++;
+					if ( count( $state['transform_state']['warnings'] ) < 50 ) {
+						$key_bits = array();
+						foreach ( $where as $key_name => $key_value ) {
+							$key_bits[] = $key_name . '=' . (string) $key_value;
+						}
+						$state['transform_state']['warnings'][] = array(
+							'table'   => $table,
+							'column'  => $column,
+							'key'     => implode( ', ', $key_bits ),
+							'message' => (string) ( $transformed['warning'] ?? 'Serialized value was left unchanged because it could not be transformed safely.' ),
+						);
+					}
+					continue;
 				}
 
 				if ( $transformed['value'] !== (string) $row[ $column ] ) {
@@ -660,11 +679,23 @@ final class SiteVault_Database_Stager {
 			$decoded = @unserialize( $value, array( 'allowed_classes' => false ) );
 
 			if ( false === $decoded && 'b:0;' !== $value ) {
-				return $this->error( 'Serialized migration value could not be decoded safely.' );
+				return array(
+					'success' => true,
+					'value' => $value,
+					'replacements' => 0,
+					'skipped' => true,
+					'warning' => 'Serialized value could not be decoded safely and was left unchanged.',
+				);
 			}
 
 			if ( is_object( $decoded ) ) {
-				return $this->error( 'Serialized object data requires the dedicated object-safe migration layer before live restore.' );
+				return array(
+					'success' => true,
+					'value' => $value,
+					'replacements' => 0,
+					'skipped' => true,
+					'warning' => 'Serialized object value was left unchanged because object-safe migration is unavailable.',
+				);
 			}
 
 			$nested = $this->transform_mixed( $decoded, $pairs, $depth + 1 );
@@ -672,11 +703,21 @@ final class SiteVault_Database_Stager {
 			if ( ! $nested['success'] ) {
 				return $nested;
 			}
+			if ( ! empty( $nested['skipped'] ) ) {
+				return array(
+					'success' => true,
+					'value' => $value,
+					'replacements' => 0,
+					'skipped' => true,
+					'warning' => (string) ( $nested['warning'] ?? 'Serialized value contains data that could not be transformed safely and was left unchanged.' ),
+				);
+			}
 
 			return array(
 				'success'      => true,
 				'value'        => serialize( $nested['value'] ),
 				'replacements' => $nested['replacements'],
+				'skipped'      => false,
 			);
 		}
 
@@ -711,10 +752,16 @@ final class SiteVault_Database_Stager {
 				if ( ! $key_result['success'] ) {
 					return $key_result;
 				}
+				if ( ! empty( $key_result['skipped'] ) ) {
+					return $key_result;
+				}
 
 				$item_result = $this->transform_mixed( $item, $pairs, $depth + 1 );
 
 				if ( ! $item_result['success'] ) {
+					return $item_result;
+				}
+				if ( ! empty( $item_result['skipped'] ) ) {
 					return $item_result;
 				}
 
@@ -726,7 +773,13 @@ final class SiteVault_Database_Stager {
 		}
 
 		if ( is_object( $value ) ) {
-			return $this->error( 'Serialized object data requires the dedicated object-safe migration layer before live restore.' );
+			return array(
+				'success' => true,
+				'value' => $value,
+				'replacements' => 0,
+				'skipped' => true,
+				'warning' => 'Serialized value contains an object and was left unchanged because object-safe migration is unavailable.',
+			);
 		}
 
 		return array( 'success' => true, 'value' => $value, 'replacements' => 0 );
