@@ -960,6 +960,7 @@ final class SiteVault_Admin {
 			'transform_rows_changed'   => (int) ( $transform['rows_changed'] ?? 0 ),
 			'transform_cells_changed'  => (int) ( $transform['cells_changed'] ?? 0 ),
 			'transform_replacements'   => (int) ( $transform['replacements'] ?? 0 ),
+			'transform_skipped_values' => (int) ( $transform['skipped_values'] ?? 0 ),
 			'live_tables_modified'     => (bool) ( $state['live_tables_modified'] ?? false ),
 			'ready_for_live_promotion' => (bool) ( $state['ready_for_live_promotion'] ?? false ),
 			'promotion_blocker'        => $state['promotion_blocker'] ?? null,
