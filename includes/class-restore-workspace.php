@@ -6,12 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class SiteVault_Restore_Workspace {
 
-	private const ENTRIES = array(
-		'manifest.json',
-		'database/database.sql',
-		'content/wp-content.zip',
-		'checksums/sha256.json',
-	);
+	private const BASE_ENTRIES = array( 'manifest.json', 'database/database.sql', 'checksums/sha256.json' );
 
 	public function prepare( array $validation_state ): array {
 		$package_file = isset( $validation_state['package_file'] ) ? (string) $validation_state['package_file'] : '';
