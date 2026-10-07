@@ -349,6 +349,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 			</div>
 
 			<?php if ( $validation_ok ) : ?>
+				<?php $has_restore_plan = ! empty( $restore_plan ) && is_array( $restore_plan ) && in_array( (string) ( $restore_plan['status'] ?? '' ), array( 'ready', 'blocked' ), true ); ?>
 				<table class="sitevault-detail-table">
 					<tbody>
 						<tr><th>Backup ID</th><td><code><?php echo esc_html( $import_validation['backup_id'] ?? '—' ); ?></code></td></tr>
@@ -364,17 +365,27 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					</tbody>
 				</table>
 
-				<div style="margin-top:16px">
-					<button id="sitevault-prepare-restore-plan" type="button" class="button button-primary">Prepare Restore Plan</button>
-				</div>
-				<div class="sitevault-progress-track" style="margin-top:12px">
-					<div id="sitevault-restore-plan-progress-bar" class="sitevault-progress-bar" style="width:0%"></div>
-				</div>
-				<div class="sitevault-progress-head" style="margin-top:6px">
-					<div id="sitevault-restore-plan-status" class="sitevault-help">Restore planning runs in resumable server-side stages.</div>
-					<strong id="sitevault-restore-plan-progress-value">0%</strong>
-				</div>
-				<p class="sitevault-help">This prepares an isolated workspace and compatibility report only. It does not restore the database or wp-content.</p>
+				<?php if ( ! $has_restore_plan ) : ?>
+					<div style="margin-top:16px">
+						<button id="sitevault-prepare-restore-plan" type="button" class="button button-primary">Prepare Restore Plan</button>
+					</div>
+					<div class="sitevault-progress-track" style="margin-top:12px">
+						<div id="sitevault-restore-plan-progress-bar" class="sitevault-progress-bar" style="width:0%"></div>
+					</div>
+					<div class="sitevault-progress-head" style="margin-top:6px">
+						<div id="sitevault-restore-plan-status" class="sitevault-help">Restore planning runs in resumable server-side stages.</div>
+						<strong id="sitevault-restore-plan-progress-value">0%</strong>
+					</div>
+					<p class="sitevault-help">This prepares an isolated workspace and compatibility report only. It does not restore the database or wp-content.</p>
+				<?php else : ?>
+					<div class="sitevault-status-banner is-complete" style="margin-top:16px">
+						<span class="sitevault-status-dot"></span>
+						<div>
+							<strong>Restore plan already prepared.</strong>
+							<p><a href="#sitevault-restore-compatibility">Continue to the restore compatibility plan below.</a></p>
+						</div>
+					</div>
+				<?php endif; ?>
 			<?php endif; ?>
 		<?php endif; ?>
 	</div>
@@ -384,7 +395,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 		$plan_ready = 'ready' === ( $restore_plan['status'] ?? '' );
 		$plan_blocked = 'blocked' === ( $restore_plan['status'] ?? '' );
 		?>
-		<div class="sitevault-card">
+		<div id="sitevault-restore-compatibility" class="sitevault-card">
 			<div class="sitevault-progress-head">
 				<div>
 					<h2 style="margin:0">Restore Compatibility Plan</h2>
