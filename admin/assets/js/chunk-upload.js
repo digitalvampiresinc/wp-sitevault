@@ -13,7 +13,7 @@ const chunkSize=Math.max(1048576,Number(cfg.chunkSize||8388608));
 async function post(fields,file){
   const body=new FormData();
   Object.keys(fields).forEach(k=>body.append(k,fields[k]));
-  body.append('_ajax_nonce',cfg.nonce||'');
+  body.append('nonce',cfg.nonce||'');
   if(file)body.append('chunk',file,'chunk.bin');
   const res=await fetch(cfg.ajaxUrl,{method:'POST',body,credentials:'same-origin'});
   let json=null;
