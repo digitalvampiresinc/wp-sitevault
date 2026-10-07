@@ -7,7 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class SiteVault_Backup_Worker {
 
 	private const EVENT = 'sitevault_backup_worker_tick';
-	private const LOCK_TTL = 120;
+	private const LOCK_TTL = 900;
 
 	public static function register(): void {
 		add_action( self::EVENT, array( __CLASS__, 'run_scheduled' ) );
