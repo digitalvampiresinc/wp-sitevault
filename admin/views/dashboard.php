@@ -318,7 +318,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 			</div>
 		</div>
 
-		<form id="sitevault-chunk-upload-form" method="post" enctype="multipart/form-data">
+		<form id="sitevault-chunk-upload-form" method="post" enctype="multipart/form-data" onsubmit="return false;">
 			<input id="sitevault-chunk-file" type="file" name="sitevault_package" accept=".sitevault,application/octet-stream" required>
 			<button id="sitevault-chunk-upload-button" type="submit" class="button button-secondary">Upload & Validate Package</button>
 		</form>
