@@ -159,7 +159,20 @@ final class SiteVault_Restore_Workspace {
 			return $this->error( 'Extracted checksum metadata is invalid.' );
 		}
 
-		foreach ( array( 'manifest.json', 'database/database.sql', 'content/wp-content.zip' ) as $entry ) {
+		$manifest_file = $payload_root . '/manifest.json';
+		$manifest = is_readable( $manifest_file ) ? json_decode( (string) file_get_contents( $manifest_file ), true ) : array();
+		$entries = array( 'manifest.json', 'database/database.sql' );
+		if ( 2 === (int) ( $manifest['format_version'] ?? 1 ) ) {
+			foreach ( (array) ( $manifest['payload']['wp_content']['chunks'] ?? array() ) as $chunk ) {
+				if ( ! empty( $chunk['file'] ) ) {
+					$entries[] = (string) $chunk['file'];
+				}
+			}
+		} else {
+			$entries[] = 'content/wp-content.zip';
+		}
+
+		foreach ( $entries as $entry ) {
 			$file     = $payload_root . '/' . $entry;
 			$expected = $checksums['files'][ $entry ] ?? null;
 
