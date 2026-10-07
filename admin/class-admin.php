@@ -37,6 +37,8 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_upload_ping', array( $this, 'handle_ajax_upload_ping' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
+		add_action( 'wp_ajax_sitevault_restore_plan_init', array( $this, 'handle_ajax_restore_plan_init' ) );
+		add_action( 'wp_ajax_sitevault_restore_plan_step', array( $this, 'handle_ajax_restore_plan_step' ) );
 		add_action( 'admin_post_sitevault_start_restore_safety', array( $this, 'handle_start_restore_safety' ) );
 		add_action( 'wp_ajax_sitevault_restore_safety_database', array( $this, 'handle_ajax_restore_safety_database' ) );
 		add_action( 'wp_ajax_sitevault_restore_safety_content', array( $this, 'handle_ajax_restore_safety_content' ) );
@@ -471,6 +473,38 @@ final class SiteVault_Admin {
 
 		update_option( 'sitevault_last_import_validation', $result['state'], false );
 		$this->redirect_with_message( 'complete', 'Existing SiteVault backup validated successfully for restore compatibility.' );
+	}
+
+	public function handle_ajax_restore_plan_init(): void {
+		$this->authorise_ajax( 'sitevault_restore_plan' );
+		$validation = get_option( 'sitevault_last_import_validation', array() );
+		if ( ! is_array( $validation ) || empty( $validation['package_file'] ) ) {
+			wp_send_json_error( array( 'message' => 'No validated SiteVault package is available.' ), 400 );
+		}
+		$result = ( new SiteVault_Restore_Workspace() )->initialise( $validation );
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Unable to initialise restore workspace.' ), 500 );
+		}
+		wp_send_json_success( $result['state'] );
+	}
+
+	public function handle_ajax_restore_plan_step(): void {
+		$this->authorise_ajax( 'sitevault_restore_plan' );
+		$plan_id = isset( $_POST['plan_id'] ) ? sanitize_key( wp_unslash( $_POST['plan_id'] ) ) : '';
+		$result = ( new SiteVault_Restore_Workspace() )->process_batch( $plan_id );
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Restore workspace preparation failed.', 'state' => $result['state'] ?? null ), 500 );
+		}
+		$state = $result['state'];
+		if ( 'prepared' === ( $state['status'] ?? '' ) ) {
+			$plan = ( new SiteVault_Restore_Planner() )->create_plan( $state );
+			if ( ! $plan['success'] ) {
+				wp_send_json_error( array( 'message' => $plan['message'] ?? 'Restore plan creation failed.' ), 500 );
+			}
+			update_option( 'sitevault_last_restore_plan', $plan['plan'], false );
+			wp_send_json_success( array( 'status' => 'complete', 'workspace' => $state, 'plan' => $plan['plan'] ) );
+		}
+		wp_send_json_success( array( 'status' => 'running', 'workspace' => $state ) );
 	}
 
 	public function handle_prepare_restore_plan(): void {
