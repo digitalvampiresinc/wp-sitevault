@@ -92,6 +92,23 @@ final class SiteVault_Admin {
 				'chunkSize' => 4194304,
 			)
 		);
+		$restore_plan_file = SITEVAULT_PATH . 'admin/assets/js/restore-plan.js';
+		$restore_plan_ver  = is_readable( $restore_plan_file ) ? (string) filemtime( $restore_plan_file ) : SITEVAULT_VERSION;
+		wp_enqueue_script(
+			'sitevault-restore-plan',
+			SITEVAULT_URL . 'admin/assets/js/restore-plan.js',
+			array(),
+			$restore_plan_ver,
+			true
+		);
+		wp_localize_script(
+			'sitevault-restore-plan',
+			'SiteVaultRestorePlan',
+			array(
+				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+				'nonce' => wp_create_nonce( 'sitevault_restore_plan' ),
+			)
+		);
 	}
 
 	public function register_menu(): void {
