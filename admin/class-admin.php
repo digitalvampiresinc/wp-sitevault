@@ -518,8 +518,15 @@ final class SiteVault_Admin {
 			if ( ! $plan['success'] ) {
 				wp_send_json_error( array( 'message' => $plan['message'] ?? 'Restore plan creation failed.' ), 500 );
 			}
-			update_option( 'sitevault_last_restore_plan', $plan['plan'], false );
-			wp_send_json_success( array( 'status' => 'complete', 'workspace' => $state, 'plan' => $plan['plan'] ) );
+			$final_plan = $plan['plan'];
+			$final_plan['workspace'] = array(
+				'plan_id'            => $state['plan_id'] ?? '',
+				'extracted_entries'  => (int) ( $state['extracted_entries'] ?? 0 ),
+				'verified_entries'   => (int) ( $state['verified_entries'] ?? 0 ),
+				'integrity_verified' => (bool) ( $state['integrity_verified'] ?? false ),
+			);
+			update_option( 'sitevault_last_restore_plan', $final_plan, false );
+			wp_send_json_success( array( 'status' => 'complete', 'workspace' => $state, 'plan' => $final_plan ) );
 		}
 		wp_send_json_success( array( 'status' => 'running', 'workspace' => $state ) );
 	}
