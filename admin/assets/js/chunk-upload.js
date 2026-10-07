@@ -64,8 +64,7 @@ function setProgress(done,total,text){
     status.className='sitevault-local-action-status is-error';
   }
 })();
-form.addEventListener('submit',async function(e){
-  e.preventDefault();
+button.addEventListener('click',async function(){
   const file=fileInput.files&&fileInput.files[0];
   if(!file)return;
   if(!/\.sitevault$/i.test(file.name)){status.textContent='Choose a .sitevault package.';return;}
