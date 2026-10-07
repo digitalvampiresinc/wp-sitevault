@@ -11,12 +11,34 @@ const status=document.getElementById('sitevault-chunk-status');
 let chunkSize=Math.max(524288,Number(cfg.chunkSize||4194304));
 const minChunkSize=524288;
 
-async function post(fields,file){
-  const body=new FormData();
-  Object.keys(fields).forEach(k=>body.append(k,fields[k]));
-  body.append('nonce',cfg.nonce||'');
-  if(file)body.append('chunk',file,'chunk.bin');
-  const res=await fetch(cfg.ajaxUrl,{method:'POST',body,credentials:'same-origin'});
+async function post(fields,file,timeoutMs){
+  const controller=new AbortController();
+  const timer=window.setTimeout(()=>controller.abort(),Number(timeoutMs||45000));
+  let body,headers={};
+  if(file){
+    body=new FormData();
+    Object.keys(fields).forEach(k=>body.append(k,fields[k]));
+    body.append('nonce',cfg.nonce||'');
+    body.append('chunk',file,'chunk.bin');
+  }else{
+    body=new URLSearchParams();
+    Object.keys(fields).forEach(k=>body.append(k,fields[k]));
+    body.append('nonce',cfg.nonce||'');
+    headers['Content-Type']='application/x-www-form-urlencoded; charset=UTF-8';
+  }
+  let res;
+  try{
+    res=await fetch(cfg.ajaxUrl,{method:'POST',body,headers,credentials:'same-origin',signal:controller.signal,cache:'no-store'});
+  }catch(err){
+    window.clearTimeout(timer);
+    if(err&&err.name==='AbortError'){
+      const timeoutError=new Error('Server did not answer within '+Math.round(Number(timeoutMs||45000)/1000)+' seconds.');
+      timeoutError.status=0;
+      throw timeoutError;
+    }
+    throw err;
+  }
+  window.clearTimeout(timer);
   let json=null;
   try{json=await res.json();}catch(e){}
   if(!res.ok||!json||json.success!==true){
@@ -42,7 +64,19 @@ form.addEventListener('submit',async function(e){
   try{
     const key=fingerprint(file);
     let resumeId=localStorage.getItem(key)||'';
-    let state=await post({action:'sitevault_upload_init',name:file.name,size:String(file.size),resume_id:resumeId});
+    status.textContent='Initializing resumable upload session…';
+    let state=null;
+    let initAttempt=0;
+    while(!state&&initAttempt<3){
+      initAttempt++;
+      try{
+        state=await post({action:'sitevault_upload_init',name:file.name,size:String(file.size),resume_id:resumeId},null,30000);
+      }catch(err){
+        if(initAttempt>=3)throw err;
+        status.textContent='Upload session did not answer. Retrying ('+(initAttempt+1)+'/3)…';
+        await new Promise(resolve=>window.setTimeout(resolve,1500));
+      }
+    }
     resumeId=state.upload_id; localStorage.setItem(key,resumeId);
     let index=Number(state.next_index||0);
     let offset=Number(state.received_size||0);
@@ -50,7 +84,7 @@ form.addEventListener('submit',async function(e){
     while(offset<file.size){
       const blob=file.slice(offset,Math.min(offset+chunkSize,file.size));
       try{
-        state=await post({action:'sitevault_upload_chunk',upload_id:resumeId,index:String(index)},blob);
+        state=await post({action:'sitevault_upload_chunk',upload_id:resumeId,index:String(index)},blob,60000);
       }catch(err){
         if(err.status===413&&chunkSize>minChunkSize){
           chunkSize=Math.max(minChunkSize,Math.floor(chunkSize/2));
@@ -64,7 +98,7 @@ form.addEventListener('submit',async function(e){
       setProgress(offset,file.size,'Uploaded '+formatBytes(offset)+' of '+formatBytes(file.size)+' · chunk '+formatBytes(chunkSize));
     }
     status.textContent='Upload complete. Validating SiteVault package…';
-    await post({action:'sitevault_upload_finalize',upload_id:resumeId});
+    await post({action:'sitevault_upload_finalize',upload_id:resumeId},null,120000);
     localStorage.removeItem(key);
     setProgress(file.size,file.size,'Upload and validation complete.');
     status.className='sitevault-local-action-status is-complete';
