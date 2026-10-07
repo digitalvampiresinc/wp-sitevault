@@ -71,11 +71,13 @@ final class SiteVault_Admin {
 			SITEVAULT_VERSION,
 			true
 		);
+		$chunk_upload_file = SITEVAULT_PATH . 'admin/assets/js/chunk-upload.js';
+		$chunk_upload_ver  = is_readable( $chunk_upload_file ) ? (string) filemtime( $chunk_upload_file ) : SITEVAULT_VERSION;
 		wp_enqueue_script(
 			'sitevault-chunk-upload',
 			SITEVAULT_URL . 'admin/assets/js/chunk-upload.js',
 			array(),
-			SITEVAULT_VERSION,
+			$chunk_upload_ver,
 			true
 		);
 		wp_localize_script(
@@ -84,7 +86,7 @@ final class SiteVault_Admin {
 			array(
 				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
 				'nonce' => wp_create_nonce( 'sitevault_chunk_upload' ),
-				'chunkSize' => 8388608,
+				'chunkSize' => 4194304,
 			)
 		);
 	}
