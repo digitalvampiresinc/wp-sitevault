@@ -53,6 +53,17 @@ function setProgress(done,total,text){
   bar.style.width=p+'%'; pct.textContent=p+'%';
   if(text)status.textContent=text;
 }
+(async function(){
+  status.textContent='Checking upload connection…';
+  try{
+    await post({action:'sitevault_upload_ping'},null,15000);
+    status.textContent='Uploader ready. Choose a .sitevault package and start upload.';
+    status.className='sitevault-help';
+  }catch(err){
+    status.textContent='Upload connection check failed: '+err.message;
+    status.className='sitevault-local-action-status is-error';
+  }
+})();
 form.addEventListener('submit',async function(e){
   e.preventDefault();
   const file=fileInput.files&&fileInput.files[0];
