@@ -318,16 +318,17 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 			</div>
 		</div>
 
-		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data">
-			<input type="hidden" name="action" value="sitevault_import_validate">
-			<?php wp_nonce_field( 'sitevault_import_validate' ); ?>
-			<input type="file" name="sitevault_package" accept=".sitevault,application/octet-stream" required>
-			<?php submit_button( 'Upload & Validate Package', 'secondary', 'submit', false ); ?>
+		<form id="sitevault-chunk-upload-form" method="post" enctype="multipart/form-data">
+			<input id="sitevault-chunk-file" type="file" name="sitevault_package" accept=".sitevault,application/octet-stream" required>
+			<button id="sitevault-chunk-upload-button" type="submit" class="button button-secondary">Upload & Validate Package</button>
 		</form>
-		<p class="sitevault-help" style="margin-top:10px">
-			Current PHP upload ceiling: <?php echo esc_html( size_format( wp_max_upload_size(), 0 ) ); ?>.
-			Chunked large-package upload is a separate transfer layer planned before production migration use.
-		</p>
+		<div class="sitevault-progress-track" style="margin-top:12px">
+			<div id="sitevault-chunk-progress-bar" class="sitevault-progress-bar" style="width:0%"></div>
+		</div>
+		<div class="sitevault-progress-head" style="margin-top:6px">
+			<div id="sitevault-chunk-status" class="sitevault-help">Large packages upload in resumable chunks. If a request fails, retrying continues from the last confirmed chunk.</div>
+			<strong id="sitevault-chunk-progress-value">0%</strong>
+		</div>
 
 		<?php if ( ! empty( $import_validation ) && is_array( $import_validation ) ) : ?>
 			<?php $validation_ok = 'validated' === ( $import_validation['status'] ?? '' ) && ! empty( $import_validation['ready_for_restore'] ); ?>
