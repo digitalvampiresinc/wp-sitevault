@@ -364,11 +364,16 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					</tbody>
 				</table>
 
-				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:16px">
-					<input type="hidden" name="action" value="sitevault_prepare_restore_plan">
-					<?php wp_nonce_field( 'sitevault_prepare_restore_plan' ); ?>
-					<?php submit_button( 'Prepare Restore Plan', 'primary', 'submit', false ); ?>
-				</form>
+				<div style="margin-top:16px">
+					<button id="sitevault-prepare-restore-plan" type="button" class="button button-primary">Prepare Restore Plan</button>
+				</div>
+				<div class="sitevault-progress-track" style="margin-top:12px">
+					<div id="sitevault-restore-plan-progress-bar" class="sitevault-progress-bar" style="width:0%"></div>
+				</div>
+				<div class="sitevault-progress-head" style="margin-top:6px">
+					<div id="sitevault-restore-plan-status" class="sitevault-help">Restore planning runs in resumable server-side stages.</div>
+					<strong id="sitevault-restore-plan-progress-value">0%</strong>
+				</div>
 				<p class="sitevault-help">This prepares an isolated workspace and compatibility report only. It does not restore the database or wp-content.</p>
 			<?php endif; ?>
 		<?php endif; ?>
