@@ -31,6 +31,9 @@ final class SiteVault_Admin {
 		add_action( 'admin_post_sitevault_resume_backup', array( $this, 'handle_resume_backup' ) );
 		add_action( 'admin_post_sitevault_delete_backup', array( $this, 'handle_delete_backup' ) );
 		add_action( 'admin_post_sitevault_import_validate', array( $this, 'handle_import_validate' ) );
+		add_action( 'wp_ajax_sitevault_upload_init', array( $this, 'handle_ajax_upload_init' ) );
+		add_action( 'wp_ajax_sitevault_upload_chunk', array( $this, 'handle_ajax_upload_chunk' ) );
+		add_action( 'wp_ajax_sitevault_upload_finalize', array( $this, 'handle_ajax_upload_finalize' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
 		add_action( 'admin_post_sitevault_start_restore_safety', array( $this, 'handle_start_restore_safety' ) );
@@ -67,6 +70,22 @@ final class SiteVault_Admin {
 			array(),
 			SITEVAULT_VERSION,
 			true
+		);
+		wp_enqueue_script(
+			'sitevault-chunk-upload',
+			SITEVAULT_URL . 'admin/assets/js/chunk-upload.js',
+			array(),
+			SITEVAULT_VERSION,
+			true
+		);
+		wp_localize_script(
+			'sitevault-chunk-upload',
+			'SiteVaultChunkUpload',
+			array(
+				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+				'nonce' => wp_create_nonce( 'sitevault_chunk_upload' ),
+				'chunkSize' => 8388608,
+			)
 		);
 	}
 
@@ -365,6 +384,38 @@ final class SiteVault_Admin {
 
 		fclose( $handle );
 		exit;
+	}
+
+	public function handle_ajax_upload_init(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		$name = isset( $_POST['name'] ) ? sanitize_file_name( wp_unslash( $_POST['name'] ) ) : '';
+		$size = isset( $_POST['size'] ) ? (int) $_POST['size'] : 0;
+		$resume_id = isset( $_POST['resume_id'] ) ? sanitize_key( wp_unslash( $_POST['resume_id'] ) ) : '';
+		$result = ( new SiteVault_Import_Manager() )->initialise_chunk_upload( $name, $size, $resume_id );
+		if ( ! $result['success'] ) wp_send_json_error( array( 'message' => $result['message'] ?? 'Unable to initialise upload.' ), 400 );
+		wp_send_json_success( $result['state'] );
+	}
+
+	public function handle_ajax_upload_chunk(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		$upload_id = isset( $_POST['upload_id'] ) ? sanitize_key( wp_unslash( $_POST['upload_id'] ) ) : '';
+		$index = isset( $_POST['index'] ) ? (int) $_POST['index'] : -1;
+		$file = isset( $_FILES['chunk'] ) && is_array( $_FILES['chunk'] ) ? $_FILES['chunk'] : array();
+		$result = ( new SiteVault_Import_Manager() )->append_upload_chunk( $upload_id, $index, $file );
+		if ( ! $result['success'] ) wp_send_json_error( array( 'message' => $result['message'] ?? 'Chunk upload failed.', 'state' => $result['state'] ?? null ), 409 );
+		wp_send_json_success( $result['state'] );
+	}
+
+	public function handle_ajax_upload_finalize(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		$upload_id = isset( $_POST['upload_id'] ) ? sanitize_key( wp_unslash( $_POST['upload_id'] ) ) : '';
+		$result = ( new SiteVault_Import_Manager() )->finalise_chunk_upload( $upload_id );
+		if ( ! $result['success'] ) {
+			update_option( 'sitevault_last_import_validation', $result['state'] ?? array( 'status' => 'invalid', 'error' => $result['message'] ?? 'Package validation failed.' ), false );
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Package validation failed.' ), 400 );
+		}
+		update_option( 'sitevault_last_import_validation', $result['state'], false );
+		wp_send_json_success( $result['state'] );
 	}
 
 	public function handle_import_validate(): void {
