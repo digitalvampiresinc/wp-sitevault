@@ -6,9 +6,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class SiteVault_Content_Archiver {
 
-	private const SCAN_DIR_BATCH = 25;
-	private const ARCHIVE_FILE_BATCH = 100;
-	private const ARCHIVE_BYTE_BATCH = 20971520; // 20 MB.
+	private const SCAN_DIR_BATCH = 100;
+	private const ARCHIVE_FILE_BATCH = 1000;
+	private const ARCHIVE_BYTE_BATCH = 268435456; // 256 MB worker ceiling.
+	private const CHUNK_TARGET_BYTES = 536870912; // 512 MB immutable content chunks.
 
 	public function initialise( string $backup_dir ): array {
 		$content_dir = trailingslashit( $backup_dir ) . 'content';
@@ -19,7 +20,7 @@ final class SiteVault_Content_Archiver {
 
 		$inventory_file = $content_dir . '/inventory.jsonl';
 		$state_file     = $content_dir . '/archive-state.json';
-		$archive_file   = $content_dir . '/wp-content.zip';
+		$archive_file   = $content_dir . '/wp-content-part-0001.zip';
 
 		if ( false === file_put_contents( $inventory_file, '', LOCK_EX ) ) {
 			return $this->error( 'Unable to initialise the wp-content inventory.' );
@@ -44,6 +45,11 @@ final class SiteVault_Content_Archiver {
 			'inventory_offset'   => 0,
 			'inventory_file'     => $inventory_file,
 			'archive_file'       => $archive_file,
+			'archive_format'     => 'chunked-v2',
+			'chunk_target_bytes' => self::CHUNK_TARGET_BYTES,
+			'current_chunk'      => 1,
+			'current_chunk_bytes'=> 0,
+			'chunks'             => array(),
 			'error'              => null,
 		);
 
@@ -103,7 +109,8 @@ final class SiteVault_Content_Archiver {
 			if ( empty( $state['inventory_file'] ) || ! is_readable( $state['inventory_file'] ) ) {
 				return $this->error( 'The backup inventory required for resume is missing.', $state );
 			}
-			if ( empty( $state['archive_file'] ) || ! is_readable( $state['archive_file'] ) ) {
+			// Legacy V1 jobs keep their existing giant ZIP. New V2 jobs use immutable chunks.
+			if ( empty( $state['archive_file'] ) || ( (int) ( $state['files_archived'] ?? 0 ) > 0 && ! is_readable( $state['archive_file'] ) ) ) {
 				return $this->error( 'The partial wp-content archive required for resume is missing.', $state );
 			}
 		}
@@ -232,88 +239,76 @@ final class SiteVault_Content_Archiver {
 	}
 
 	private function process_archive_batch( string $state_file, array $state ): array {
+		// Backups created before chunked-v2 retain the proven V1 resume path.
+		if ( 'chunked-v2' !== ( $state['archive_format'] ?? '' ) ) {
+			return $this->process_legacy_archive_batch( $state_file, $state );
+		}
+
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return $this->fail_state( $state_file, $state, 'PHP ZipArchive is not available on this server.' );
 		}
 
 		$inventory = fopen( $state['inventory_file'], 'rb' );
-
 		if ( false === $inventory ) {
 			return $this->fail_state( $state_file, $state, 'Unable to read wp-content inventory.' );
 		}
-
 		if ( 0 !== fseek( $inventory, (int) $state['inventory_offset'] ) ) {
 			fclose( $inventory );
 			return $this->fail_state( $state_file, $state, 'Unable to resume wp-content inventory position.' );
 		}
 
+		$chunk = max( 1, (int) ( $state['current_chunk'] ?? 1 ) );
+		$archive_file = dirname( $state_file ) . '/wp-content-part-' . str_pad( (string) $chunk, 4, '0', STR_PAD_LEFT ) . '.zip';
+		$state['archive_file'] = $archive_file;
 		$zip = new ZipArchive();
-		$open_result = $zip->open( $state['archive_file'], ZipArchive::CREATE );
-
+		$open_result = $zip->open( $archive_file, ZipArchive::CREATE );
 		if ( true !== $open_result ) {
 			fclose( $inventory );
-			return $this->fail_state( $state_file, $state, 'Unable to open wp-content ZIP archive. Code: ' . (int) $open_result );
+			return $this->fail_state( $state_file, $state, 'Unable to open content chunk. Code: ' . (int) $open_result );
 		}
 
 		$files_this_batch = 0;
 		$bytes_this_batch = 0;
-		$root             = wp_normalize_path( WP_CONTENT_DIR );
-		$reached_eof      = false;
+		$root = wp_normalize_path( WP_CONTENT_DIR );
+		$reached_eof = false;
+		$current_chunk_bytes = (int) ( $state['current_chunk_bytes'] ?? 0 );
 
 		while ( $files_this_batch < self::ARCHIVE_FILE_BATCH && $bytes_this_batch < self::ARCHIVE_BYTE_BATCH ) {
 			$line_start = ftell( $inventory );
-			$line       = fgets( $inventory );
-
+			$line = fgets( $inventory );
 			if ( false === $line ) {
 				$reached_eof = true;
 				break;
 			}
-
 			$entry = json_decode( trim( $line ), true );
-
 			if ( ! is_array( $entry ) || empty( $entry['path'] ) ) {
 				$state['files_skipped']++;
 				$state['inventory_offset'] = ftell( $inventory );
 				continue;
 			}
-
 			$relative = ltrim( (string) $entry['path'], '/' );
 			$absolute = WP_CONTENT_DIR . '/' . $relative;
-			$real     = realpath( $absolute );
-
-			if ( false === $real || ! is_file( $absolute ) || ! is_readable( $absolute ) ) {
+			$real = realpath( $absolute );
+			if ( false === $real || ! is_file( $absolute ) || ! is_readable( $absolute ) || 0 !== strpos( wp_normalize_path( $real ), trailingslashit( $root ) ) ) {
 				$state['files_skipped']++;
 				$state['inventory_offset'] = ftell( $inventory );
 				continue;
 			}
-
-			$real_normalized = wp_normalize_path( $real );
-
-			if ( 0 !== strpos( $real_normalized, trailingslashit( $root ) ) ) {
-				$state['files_skipped']++;
-				$state['inventory_offset'] = ftell( $inventory );
-				continue;
-			}
-
 			$size = filesize( $absolute );
-
 			if ( false === $size ) {
 				$state['files_skipped']++;
 				$state['inventory_offset'] = ftell( $inventory );
 				continue;
 			}
-
-			if ( $files_this_batch > 0 && $bytes_this_batch + (int) $size > self::ARCHIVE_BYTE_BATCH ) {
+			if ( $files_this_batch > 0 && ( $bytes_this_batch + (int) $size > self::ARCHIVE_BYTE_BATCH || $current_chunk_bytes + $bytes_this_batch + (int) $size > self::CHUNK_TARGET_BYTES ) ) {
 				fseek( $inventory, $line_start );
 				break;
 			}
-
 			if ( ! $zip->addFile( $absolute, 'wp-content/' . $relative ) ) {
 				$zip->close();
 				fclose( $inventory );
-				return $this->fail_state( $state_file, $state, 'Unable to add file to archive: ' . $relative );
+				return $this->fail_state( $state_file, $state, 'Unable to add file to content chunk: ' . $relative );
 			}
-
 			$state['files_archived']++;
 			$state['bytes_archived'] += (int) $size;
 			$files_this_batch++;
@@ -321,39 +316,93 @@ final class SiteVault_Content_Archiver {
 			$state['inventory_offset'] = ftell( $inventory );
 		}
 
-		$zip_closed = $zip->close();
-		fclose( $inventory );
-
-		if ( ! $zip_closed ) {
-			return $this->fail_state( $state_file, $state, 'Unable to finalise the current wp-content ZIP batch.' );
+		if ( ! $zip->close() ) {
+			fclose( $inventory );
+			return $this->fail_state( $state_file, $state, 'Unable to finalise the current content chunk batch.' );
 		}
-
+		fclose( $inventory );
+		$state['current_chunk_bytes'] = $current_chunk_bytes + $bytes_this_batch;
 		$state['updated_at'] = gmdate( 'c' );
 
-		if ( $reached_eof ) {
-			$verification = $this->verify_archive( $state );
-
+		$chunk_full = $state['current_chunk_bytes'] >= self::CHUNK_TARGET_BYTES;
+		if ( $reached_eof || $chunk_full ) {
+			$verification = $this->verify_chunk( $archive_file );
 			if ( ! $verification['success'] ) {
-				return $this->fail_state(
-					$state_file,
-					$state,
-					$verification['message'] ?? 'wp-content archive verification failed.'
-				);
+				return $this->fail_state( $state_file, $state, $verification['message'] );
 			}
+			$state['chunks'][] = array(
+				'file' => 'content/' . basename( $archive_file ),
+				'entries' => (int) $verification['entries'],
+				'size' => (int) filesize( $archive_file ),
+				'sha256' => hash_file( 'sha256', $archive_file ),
+			);
+			if ( ! $reached_eof ) {
+				$state['current_chunk'] = $chunk + 1;
+				$state['current_chunk_bytes'] = 0;
+				$state['archive_file'] = dirname( $state_file ) . '/wp-content-part-' . str_pad( (string) ( $chunk + 1 ), 4, '0', STR_PAD_LEFT ) . '.zip';
+			}
+		}
 
-			$state['archive_verified']    = true;
-			$state['archive_entries']     = (int) $verification['entries'];
-			$state['self_backup_excluded']= (bool) $verification['self_backup_excluded'];
-			$state['phase']               = 'complete';
-			$state['status']              = 'complete';
-			$state['completed_at']        = gmdate( 'c' );
+		if ( $reached_eof ) {
+			$entries = array_sum( array_map( static fn( $part ) => (int) ( $part['entries'] ?? 0 ), $state['chunks'] ) );
+			if ( $entries !== (int) $state['files_archived'] ) {
+				return $this->fail_state( $state_file, $state, 'Chunk entry count does not match archived file count.' );
+			}
+			$state['archive_verified'] = true;
+			$state['archive_entries'] = $entries;
+			$state['phase'] = 'complete';
+			$state['status'] = 'complete';
+			$state['completed_at'] = gmdate( 'c' );
 		}
 
 		if ( ! $this->save_state( $state_file, $state ) ) {
 			return $this->error( 'wp-content archive progressed, but state could not be saved.' );
 		}
-
 		return array( 'success' => true, 'state' => $state );
+	}
+
+	private function verify_chunk( string $file ): array {
+		$zip = new ZipArchive();
+		$open = $zip->open( $file );
+		if ( true !== $open ) {
+			return array( 'success' => false, 'message' => 'Unable to verify completed content chunk.' );
+		}
+		$entries = (int) $zip->numFiles;
+		for ( $i = 0; $i < $entries; $i++ ) {
+			$name = ltrim( wp_normalize_path( (string) $zip->getNameIndex( $i ) ), '/' );
+			if ( 'wp-content/sitevault' === $name || 0 === strpos( $name, 'wp-content/sitevault/' ) ) {
+				$zip->close();
+				return array( 'success' => false, 'message' => 'Content chunk contains SiteVault runtime data.' );
+			}
+		}
+		$zip->close();
+		return array( 'success' => true, 'entries' => $entries );
+	}
+
+	private function process_legacy_archive_batch( string $state_file, array $state ): array {
+		if ( ! class_exists( 'ZipArchive' ) ) return $this->fail_state( $state_file, $state, 'PHP ZipArchive is not available on this server.' );
+		$inventory = fopen( $state['inventory_file'], 'rb' );
+		if ( false === $inventory ) return $this->fail_state( $state_file, $state, 'Unable to read wp-content inventory.' );
+		if ( 0 !== fseek( $inventory, (int) $state['inventory_offset'] ) ) { fclose( $inventory ); return $this->fail_state( $state_file, $state, 'Unable to resume wp-content inventory position.' ); }
+		$zip = new ZipArchive();
+		$open_result = $zip->open( $state['archive_file'], ZipArchive::CREATE );
+		if ( true !== $open_result ) { fclose( $inventory ); return $this->fail_state( $state_file, $state, 'Unable to open wp-content ZIP archive. Code: ' . (int) $open_result ); }
+		$files_this_batch=0; $bytes_this_batch=0; $root=wp_normalize_path(WP_CONTENT_DIR); $reached_eof=false;
+		while ( $files_this_batch < 100 && $bytes_this_batch < 20971520 ) {
+			$line_start=ftell($inventory); $line=fgets($inventory); if(false===$line){$reached_eof=true;break;}
+			$entry=json_decode(trim($line),true); if(!is_array($entry)||empty($entry['path'])){$state['files_skipped']++;$state['inventory_offset']=ftell($inventory);continue;}
+			$relative=ltrim((string)$entry['path'],'/'); $absolute=WP_CONTENT_DIR.'/'.$relative; $real=realpath($absolute);
+			if(false===$real||!is_file($absolute)||!is_readable($absolute)||0!==strpos(wp_normalize_path($real),trailingslashit($root))){$state['files_skipped']++;$state['inventory_offset']=ftell($inventory);continue;}
+			$size=filesize($absolute); if(false===$size){$state['files_skipped']++;$state['inventory_offset']=ftell($inventory);continue;}
+			if($files_this_batch>0&&$bytes_this_batch+(int)$size>20971520){fseek($inventory,$line_start);break;}
+			if(!$zip->addFile($absolute,'wp-content/'.$relative)){$zip->close();fclose($inventory);return $this->fail_state($state_file,$state,'Unable to add file to archive: '.$relative);}
+			$state['files_archived']++;$state['bytes_archived']+=(int)$size;$files_this_batch++;$bytes_this_batch+=(int)$size;$state['inventory_offset']=ftell($inventory);
+		}
+		$zip_closed=$zip->close();fclose($inventory);if(!$zip_closed)return $this->fail_state($state_file,$state,'Unable to finalise the current wp-content ZIP batch.');
+		$state['updated_at']=gmdate('c');
+		if($reached_eof){$verification=$this->verify_archive($state);if(!$verification['success'])return $this->fail_state($state_file,$state,$verification['message']??'wp-content archive verification failed.');$state['archive_verified']=true;$state['archive_entries']=(int)$verification['entries'];$state['self_backup_excluded']=(bool)$verification['self_backup_excluded'];$state['phase']='complete';$state['status']='complete';$state['completed_at']=gmdate('c');}
+		if(!$this->save_state($state_file,$state))return $this->error('wp-content archive progressed, but state could not be saved.');
+		return array('success'=>true,'state'=>$state);
 	}
 
 	private function verify_archive( array $state ): array {
