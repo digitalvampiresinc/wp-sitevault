@@ -30,6 +30,7 @@ jobs:
           test "$(unzip -Z1 build/wp-sitevault.zip | head -n 1)" = "wp-sitevault/"
           unzip -Z1 build/wp-sitevault.zip | grep -qx "wp-sitevault/admin/assets/js/admin-actions.js"
           unzip -Z1 build/wp-sitevault.zip | grep -qx "wp-sitevault/admin/assets/js/chunk-upload.js"
+          unzip -Z1 build/wp-sitevault.zip | grep -qx "wp-sitevault/admin/assets/js/restore-plan.js"
 
       - name: Upload installable ZIP
         uses: actions/upload-artifact@v4
