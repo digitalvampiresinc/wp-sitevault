@@ -685,6 +685,16 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 					<h2 style="margin:0">Shadow Database Staging</h2>
 					<div class="sitevault-help">The source database is imported into isolated staging tables first. Live WordPress tables remain untouched.</div>
 				</div>
+				<?php if ( ! empty( $database_staging['transform_state']['warnings'] ) ) : ?>
+					<div class="sitevault-status-banner is-warning">
+						<span class="sitevault-status-dot"></span>
+						<div>
+							<strong>Some serialized values were left unchanged for safety.</strong>
+							<p><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['skipped_values'] ?? 0 ) ) ); ?> value(s) could not be decoded or contained objects. SiteVault preserved those bytes unchanged and continued the staged migration.</p>
+						</div>
+					</div>
+				<?php endif; ?>
+
 				<?php if ( $database_stage_verified ) : ?>
 					<span class="sitevault-badge is-complete">Verified</span>
 				<?php elseif ( $database_stage_running ) : ?>
@@ -736,6 +746,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 						<tr><th>Migration rows scanned</th><td id="sitevault-db-stage-scanned"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['rows_scanned'] ?? 0 ) ) ); ?></td></tr>
 						<tr><th>Migration rows changed</th><td id="sitevault-db-stage-rows-changed"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['rows_changed'] ?? 0 ) ) ); ?></td></tr>
 						<tr><th>Serialized/text replacements</th><td id="sitevault-db-stage-replacements"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['replacements'] ?? 0 ) ) ); ?></td></tr>
+						<tr><th>Unsafe serialized values skipped</th><td id="sitevault-db-stage-skipped"><?php echo esc_html( number_format_i18n( (int) ( $database_staging['transform_state']['skipped_values'] ?? 0 ) ) ); ?></td></tr>
 						<tr><th>Live WordPress tables modified</th><td id="sitevault-db-stage-live"><?php echo ! empty( $database_staging['live_tables_modified'] ) ? 'Yes' : 'No'; ?></td></tr>
 						<tr><th>Ready for future live promotion</th><td id="sitevault-db-stage-promotion"><?php echo ! empty( $database_staging['ready_for_live_promotion'] ) ? 'Yes' : 'No'; ?></td></tr>
 					</tbody>
@@ -789,6 +800,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 						const scanned=document.getElementById('sitevault-db-stage-scanned');
 						const rowsChanged=document.getElementById('sitevault-db-stage-rows-changed');
 						const replacements=document.getElementById('sitevault-db-stage-replacements');
+						const skipped=document.getElementById('sitevault-db-stage-skipped');
 
 						async function post(action,nonce){
 							const body=new URLSearchParams(); body.set('action',action); body.set('nonce',nonce);
@@ -825,6 +837,7 @@ $package_stage_state = $package_verified ? 'complete' : ( $needs_package ? 'runn
 								scanned.textContent=Number(d.transform_rows_scanned||0).toLocaleString();
 								rowsChanged.textContent=Number(d.transform_rows_changed||0).toLocaleString();
 								replacements.textContent=Number(d.transform_replacements||0).toLocaleString();
+								if(skipped)skipped.textContent=Number(d.transform_skipped_values||0).toLocaleString();
 
 								if(d.status==='verified'){
 									setProgress(100,'Shadow database verified');
