@@ -8,7 +8,8 @@ const button=document.getElementById('sitevault-chunk-upload-button');
 const bar=document.getElementById('sitevault-chunk-progress-bar');
 const pct=document.getElementById('sitevault-chunk-progress-value');
 const status=document.getElementById('sitevault-chunk-status');
-const chunkSize=Math.max(1048576,Number(cfg.chunkSize||8388608));
+let chunkSize=Math.max(524288,Number(cfg.chunkSize||4194304));
+const minChunkSize=524288;
 
 async function post(fields,file){
   const body=new FormData();
@@ -20,7 +21,7 @@ async function post(fields,file){
   try{json=await res.json();}catch(e){}
   if(!res.ok||!json||json.success!==true){
     const msg=json&&json.data&&json.data.message?json.data.message:('Upload request failed ('+res.status+').');
-    const err=new Error(msg); err.payload=json; throw err;
+    const err=new Error(msg); err.payload=json; err.status=res.status; throw err;
   }
   return json.data;
 }
@@ -48,10 +49,19 @@ form.addEventListener('submit',async function(e){
     setProgress(offset,file.size,'Uploading package in resumable chunks…');
     while(offset<file.size){
       const blob=file.slice(offset,Math.min(offset+chunkSize,file.size));
-      state=await post({action:'sitevault_upload_chunk',upload_id:resumeId,index:String(index)},blob);
+      try{
+        state=await post({action:'sitevault_upload_chunk',upload_id:resumeId,index:String(index)},blob);
+      }catch(err){
+        if(err.status===413&&chunkSize>minChunkSize){
+          chunkSize=Math.max(minChunkSize,Math.floor(chunkSize/2));
+          status.textContent='Server request limit detected. Retrying automatically with '+formatBytes(chunkSize)+' chunks…';
+          continue;
+        }
+        throw err;
+      }
       offset=Number(state.received_size||0);
       index=Number(state.next_index||index+1);
-      setProgress(offset,file.size,'Uploaded '+formatBytes(offset)+' of '+formatBytes(file.size));
+      setProgress(offset,file.size,'Uploaded '+formatBytes(offset)+' of '+formatBytes(file.size)+' · chunk '+formatBytes(chunkSize));
     }
     status.textContent='Upload complete. Validating SiteVault package…';
     await post({action:'sitevault_upload_finalize',upload_id:resumeId});
