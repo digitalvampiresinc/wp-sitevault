@@ -34,6 +34,7 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_upload_init', array( $this, 'handle_ajax_upload_init' ) );
 		add_action( 'wp_ajax_sitevault_upload_chunk', array( $this, 'handle_ajax_upload_chunk' ) );
 		add_action( 'wp_ajax_sitevault_upload_finalize', array( $this, 'handle_ajax_upload_finalize' ) );
+		add_action( 'wp_ajax_sitevault_upload_ping', array( $this, 'handle_ajax_upload_ping' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
 		add_action( 'admin_post_sitevault_start_restore_safety', array( $this, 'handle_start_restore_safety' ) );
@@ -386,6 +387,11 @@ final class SiteVault_Admin {
 
 		fclose( $handle );
 		exit;
+	}
+
+	public function handle_ajax_upload_ping(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		wp_send_json_success( array( 'status' => 'ok', 'time' => gmdate( 'c' ) ) );
 	}
 
 	public function handle_ajax_upload_init(): void {
