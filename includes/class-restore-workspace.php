@@ -37,10 +37,30 @@ final class SiteVault_Restore_Workspace {
 			return $this->error( 'Unable to open validated SiteVault package for extraction.' );
 		}
 
-		foreach ( self::ENTRIES as $entry ) {
-			$target = $payload . '/' . $entry;
-			$result = $this->copy_zip_entry( $zip, $entry, $target );
+		$entries = self::BASE_ENTRIES;
+		$manifest_raw = $zip->getFromName( 'manifest.json' );
+		$manifest = false === $manifest_raw ? array() : json_decode( $manifest_raw, true );
+		$format_version = is_array( $manifest ) ? (int) ( $manifest['format_version'] ?? 1 ) : 1;
 
+		if ( 2 === $format_version ) {
+			foreach ( (array) ( $manifest['payload']['wp_content']['chunks'] ?? array() ) as $chunk ) {
+				$file = (string) ( $chunk['file'] ?? '' );
+				if ( '' !== $file ) {
+					$entries[] = $file;
+				}
+			}
+		} else {
+			$entries[] = 'content/wp-content.zip';
+		}
+
+		foreach ( $entries as $entry ) {
+			$target = $payload . '/' . $entry;
+			$parent = dirname( $target );
+			if ( ! is_dir( $parent ) && ! wp_mkdir_p( $parent ) ) {
+				$zip->close();
+				return $this->error( 'Unable to create restore workspace directory.' );
+			}
+			$result = $this->copy_zip_entry( $zip, $entry, $target );
 			if ( ! $result['success'] ) {
 				$zip->close();
 				return $result;
@@ -63,7 +83,7 @@ final class SiteVault_Restore_Workspace {
 			'payload_root'       => $payload,
 			'package_file'       => $package_file,
 			'backup_id'          => $validation['state']['backup_id'] ?? '',
-			'extracted_entries'  => count( self::ENTRIES ),
+			'extracted_entries'  => count( $entries ),
 			'integrity_verified' => true,
 			'error'              => null,
 		);
