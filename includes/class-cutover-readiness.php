@@ -79,6 +79,11 @@ final class SiteVault_Cutover_Readiness {
 			return $database_check;
 		}
 
+		$placeholder_check = $this->verify_no_placeholder_escapes( $database_state );
+		if ( ! $placeholder_check['success'] ) {
+			return $placeholder_check;
+		}
+
 		$content_check = $this->verify_shadow_content( $content_state );
 
 		if ( ! $content_check['success'] ) {
@@ -219,6 +224,49 @@ final class SiteVault_Cutover_Readiness {
 			'tables'  => count( $tables ),
 			'rows'    => $rows,
 		);
+	}
+
+	private function verify_no_placeholder_escapes( array $state ): array {
+		global $wpdb;
+
+		$tables = is_array( $state['table_map'] ?? null ) ? array_values( $state['table_map'] ) : array();
+
+		foreach ( $tables as $table ) {
+			if ( ! preg_match( '/^svstg_[A-Za-z0-9_]+$/', (string) $table ) ) {
+				return $this->error( 'Unexpected shadow table identifier during placeholder readiness check.' );
+			}
+
+			$table_sql = $this->quote_identifier( (string) $table );
+			$columns   = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sql}", ARRAY_A );
+
+			if ( ! is_array( $columns ) ) {
+				return $this->error( 'Unable to inspect shadow database for placeholder readiness.' );
+			}
+
+			foreach ( $columns as $column ) {
+				$type = strtolower( (string) ( $column['Type'] ?? '' ) );
+				$name = (string) ( $column['Field'] ?? '' );
+
+				if ( '' === $name || ! preg_match( '/(?:char|text|blob|json|enum|set)/', $type ) ) {
+					continue;
+				}
+
+				$column_sql = $this->quote_identifier( $name );
+				$count = $wpdb->get_var(
+					"SELECT COUNT(*) FROM {$table_sql} WHERE {$column_sql} REGEXP '\\\\{[0-9A-Fa-f]{64}\\\\}'"
+				);
+
+				if ( null === $count ) {
+					return $this->error( 'Unable to complete shadow placeholder readiness scan.' );
+				}
+
+				if ( (int) $count > 0 ) {
+					return $this->error( 'Cutover blocked: unsafe WordPress percent placeholder escapes remain in the shadow database.' );
+				}
+			}
+		}
+
+		return array( 'success' => true );
 	}
 
 	private function verify_shadow_content( array $state ): array {
