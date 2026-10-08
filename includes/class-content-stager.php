@@ -7,8 +7,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class SiteVault_Content_Stager {
 
 	private const OPTION = 'sitevault_content_staging_state';
-	private const FILES_PER_BATCH = 100;
-	private const BYTES_PER_BATCH = 20971520; // 20 MB.
+	private const FILES_PER_BATCH = 1000;
+	private const BYTES_PER_BATCH = 268435456; // 256 MB.
 
 	public function start( array $restore_plan, array $safety_state, array $database_state ): array {
 		if ( 'ready' !== ( $restore_plan['status'] ?? '' ) ) {
@@ -32,10 +32,16 @@ final class SiteVault_Content_Stager {
 			return $this->error( 'A matching verified shadow database is required before wp-content staging.' );
 		}
 
-		$archive = WP_CONTENT_DIR . '/sitevault/restore-plans/' . $plan_id . '/payload/content/wp-content.zip';
-
-		if ( ! is_readable( $archive ) || ! is_file( $archive ) ) {
-			return $this->error( 'Restore-plan wp-content archive is unavailable.' );
+		$payload_root = WP_CONTENT_DIR . '/sitevault/restore-plans/' . $plan_id . '/payload';
+		$parts = (array) ( $restore_plan['content']['parts'] ?? array( 'content/wp-content.zip' ) );
+		$archives = array();
+		foreach ( $parts as $logical ) {
+			$logical = (string) $logical;
+			$file = $payload_root . '/' . $logical;
+			if ( '' === $logical || ! is_readable( $file ) || ! is_file( $file ) ) {
+				return $this->error( 'Restore-plan content archive part is unavailable: ' . $logical );
+			}
+			$archives[] = $file;
 		}
 
 		if ( ! class_exists( 'ZipArchive' ) ) {
@@ -60,15 +66,14 @@ final class SiteVault_Content_Stager {
 			return $clean;
 		}
 
-		$zip  = new ZipArchive();
-		$open = $zip->open( $archive );
-
-		if ( true !== $open ) {
-			return $this->error( 'Unable to open staged wp-content archive.' );
+		$entry_count = 0;
+		foreach ( $archives as $archive ) {
+			$zip = new ZipArchive();
+			$open = $zip->open( $archive );
+			if ( true !== $open ) return $this->error( 'Unable to open staged wp-content archive part.' );
+			$entry_count += (int) $zip->numFiles;
+			$zip->close();
 		}
-
-		$entry_count = (int) $zip->numFiles;
-		$zip->close();
 
 		$expected_files = (int) ( $restore_plan['content']['manifest_files'] ?? 0 );
 		$expected_bytes = $this->manifest_content_bytes( $plan_id );
@@ -84,7 +89,9 @@ final class SiteVault_Content_Stager {
 			'started_at'             => gmdate( 'c' ),
 			'updated_at'             => gmdate( 'c' ),
 			'completed_at'           => null,
-			'archive_file'           => $archive,
+			'archive_files'          => $archives,
+			'archive_file'           => $archives[0],
+			'archive_part_index'     => 0,
 			'staging_root'           => $root,
 			'zip_index'              => 0,
 			'expected_files'         => $expected_files,
@@ -113,54 +120,51 @@ final class SiteVault_Content_Stager {
 			return $this->error( 'No wp-content staging extraction is ready to process.', $state );
 		}
 
-		$zip  = new ZipArchive();
-		$open = $zip->open( $state['archive_file'] );
+		$archives = (array) ( $state['archive_files'] ?? array( $state['archive_file'] ?? '' ) );
+		$part_index = (int) ( $state['archive_part_index'] ?? 0 );
+		if ( ! isset( $archives[ $part_index ] ) ) {
+			$state['stage'] = 'verify';
+			$this->save_state( $state );
+			return array( 'success' => true, 'state' => $state );
+		}
 
+		$zip = new ZipArchive();
+		$open = $zip->open( $archives[ $part_index ] );
 		if ( true !== $open ) {
-			return $this->fail( $state, 'Unable to reopen wp-content archive for staging.' );
+			return $this->fail( $state, 'Unable to reopen wp-content archive part for staging.' );
 		}
 
 		$processed_files = 0;
 		$processed_bytes = 0;
-		$index           = (int) $state['zip_index'];
-		$total_entries   = (int) $zip->numFiles;
+		$index = (int) $state['zip_index'];
+		$total_entries = (int) $zip->numFiles;
 
-		while (
-			$index < $total_entries &&
-			$processed_files < self::FILES_PER_BATCH &&
-			$processed_bytes < self::BYTES_PER_BATCH
-		) {
+		while ( $index < $total_entries && $processed_files < self::FILES_PER_BATCH && $processed_bytes < self::BYTES_PER_BATCH ) {
 			$name = $zip->getNameIndex( $index );
 			$stat = $zip->statIndex( $index );
-
 			if ( false === $name || false === $stat ) {
 				$zip->close();
 				return $this->fail( $state, 'Unable to inspect wp-content archive entry #' . $index . '.' );
 			}
 
 			$normalized = ltrim( wp_normalize_path( $name ), '/' );
-
 			if ( ! $this->is_safe_content_entry( $normalized ) ) {
 				$zip->close();
 				return $this->fail( $state, 'Unsafe or unexpected wp-content path blocked: ' . $normalized );
 			}
 
 			$relative = substr( $normalized, strlen( 'wp-content/' ) );
-
 			if ( '' === $relative ) {
 				$index++;
 				$state['zip_index'] = $index;
 				continue;
 			}
-
 			if ( str_ends_with( $normalized, '/' ) ) {
 				$dir = trailingslashit( $state['staging_root'] ) . untrailingslashit( $relative );
-
 				if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
 					$zip->close();
 					return $this->fail( $state, 'Unable to create staged directory: ' . $relative );
 				}
-
 				$state['directories_created']++;
 				$index++;
 				$state['zip_index'] = $index;
@@ -168,29 +172,19 @@ final class SiteVault_Content_Stager {
 			}
 
 			$entry_size = (int) ( $stat['size'] ?? 0 );
-
-			if (
-				$processed_files > 0 &&
-				$processed_bytes + $entry_size > self::BYTES_PER_BATCH
-			) {
-				break;
-			}
+			if ( $processed_files > 0 && $processed_bytes + $entry_size > self::BYTES_PER_BATCH ) break;
 
 			$target = trailingslashit( $state['staging_root'] ) . $relative;
 			$parent = dirname( $target );
-
 			if ( ! is_dir( $parent ) && ! wp_mkdir_p( $parent ) ) {
 				$zip->close();
 				return $this->fail( $state, 'Unable to create staged file directory: ' . dirname( $relative ) );
 			}
-
 			$result = $this->extract_entry( $zip, $name, $target, $entry_size );
-
 			if ( ! $result['success'] ) {
 				$zip->close();
 				return $this->fail( $state, $result['message'] );
 			}
-
 			$state['files_staged']++;
 			$state['bytes_staged'] += (int) $result['bytes'];
 			$processed_files++;
@@ -203,11 +197,17 @@ final class SiteVault_Content_Stager {
 		$state['updated_at'] = gmdate( 'c' );
 
 		if ( $index >= $total_entries ) {
-			$state['stage'] = 'verify';
+			$part_index++;
+			$state['archive_part_index'] = $part_index;
+			$state['zip_index'] = 0;
+			if ( isset( $archives[ $part_index ] ) ) {
+				$state['archive_file'] = $archives[ $part_index ];
+			} else {
+				$state['stage'] = 'verify';
+			}
 		}
 
 		$this->save_state( $state );
-
 		return array( 'success' => true, 'state' => $state );
 	}
 

@@ -60,11 +60,20 @@ final class SiteVault_Package_Builder {
 		}
 
 		$entries = array(
-			'manifest.json'          => trailingslashit( $backup_dir ) . 'manifest.json',
-			'database/database.sql'  => trailingslashit( $backup_dir ) . 'database/database.sql',
-			'content/wp-content.zip' => trailingslashit( $backup_dir ) . 'content/wp-content.zip',
-			'checksums/sha256.json'  => trailingslashit( $backup_dir ) . 'checksums/sha256.json',
+			'manifest.json' => trailingslashit( $backup_dir ) . 'manifest.json',
+			'database/database.sql' => trailingslashit( $backup_dir ) . 'database/database.sql',
+			'checksums/sha256.json' => trailingslashit( $backup_dir ) . 'checksums/sha256.json',
 		);
+		$content_state_file = trailingslashit( $backup_dir ) . 'content/archive-state.json';
+		$content_state = is_readable( $content_state_file ) ? json_decode( (string) file_get_contents( $content_state_file ), true ) : array();
+		if ( 'chunked-v2' === ( $content_state['archive_format'] ?? '' ) ) {
+			foreach ( (array) ( $content_state['chunks'] ?? array() ) as $chunk ) {
+				$logical = (string) ( $chunk['file'] ?? '' );
+				if ( '' !== $logical ) $entries[ $logical ] = trailingslashit( $backup_dir ) . $logical;
+			}
+		} else {
+			$entries['content/wp-content.zip'] = trailingslashit( $backup_dir ) . 'content/wp-content.zip';
+		}
 
 		foreach ( $entries as $logical => $source ) {
 			if ( ! is_readable( $source ) || ! $zip->addFile( $source, $logical ) ) {
@@ -73,7 +82,7 @@ final class SiteVault_Package_Builder {
 				return $this->fail_state( $state_file, 'Unable to add package entry: ' . $logical );
 			}
 
-			if ( 'content/wp-content.zip' === $logical && method_exists( $zip, 'setCompressionName' ) ) {
+			if ( 0 === strpos( $logical, 'content/' ) && method_exists( $zip, 'setCompressionName' ) ) {
 				$zip->setCompressionName( $logical, ZipArchive::CM_STORE );
 			}
 		}
@@ -150,6 +159,8 @@ final class SiteVault_Package_Builder {
 
 		$manifest['completed_at'] = gmdate( 'c' );
 		$manifest['backup_type']  = isset( $manifest['backup_type'] ) ? sanitize_key( (string) $manifest['backup_type'] ) : 'full';
+		$is_chunked = 'chunked-v2' === ( $content_state['archive_format'] ?? '' );
+		$manifest['format_version'] = $is_chunked ? 2 : (int) ( $manifest['format_version'] ?? 1 );
 		$manifest['payload']      = array(
 			'database' => array(
 				'file'          => 'database/database.sql',
@@ -157,7 +168,9 @@ final class SiteVault_Package_Builder {
 				'rows_exported' => (int) ( $db_state['rows_exported'] ?? 0 ),
 			),
 			'wp_content' => array(
-				'file'             => 'content/wp-content.zip',
+				'format'           => $is_chunked ? 'chunked-zip' : 'single-zip',
+				'file'             => $is_chunked ? null : 'content/wp-content.zip',
+				'chunks'           => $is_chunked ? array_values( (array) ( $content_state['chunks'] ?? array() ) ) : array(),
 				'files_discovered' => (int) ( $content_state['files_discovered'] ?? 0 ),
 				'files_archived'   => (int) ( $content_state['files_archived'] ?? 0 ),
 				'bytes_archived'   => (int) ( $content_state['bytes_archived'] ?? 0 ),

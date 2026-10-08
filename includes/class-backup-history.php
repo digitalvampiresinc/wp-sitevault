@@ -42,12 +42,19 @@ final class SiteVault_Backup_History {
 				is_string( $package_file ) &&
 				is_readable( $package_file );
 
+			$content_status = (string) ( $content['status'] ?? '' );
 			$items[] = array(
 				'backup_id'      => $entry,
 				'created_at'     => $manifest['created_at'] ?? null,
 				'completed_at'   => $package['completed_at'] ?? ( $content['completed_at'] ?? null ),
 				'database_rows'  => (int) ( $database['rows_exported'] ?? 0 ),
 				'files_archived' => (int) ( $content['files_archived'] ?? 0 ),
+				'files_discovered'=> (int) ( $content['files_discovered'] ?? 0 ),
+				'bytes_archived' => (int) ( $content['bytes_archived'] ?? 0 ),
+				'content_status' => $content_status,
+				'content_phase'  => (string) ( $content['phase'] ?? '' ),
+				'content_error'  => (string) ( $content['error'] ?? '' ),
+				'resumable'      => 'failed' === $content_status && in_array( (string) ( $content['phase'] ?? '' ), array( 'scanning', 'archiving' ), true ),
 				'package_status' => $package['status'] ?? ( 'complete' === ( $content['status'] ?? '' ) ? 'needs_package' : 'incomplete' ),
 				'package_size'   => $has_package ? (int) ( $package['package_size'] ?? filesize( $package_file ) ) : null,
 				'package_sha256' => $has_package ? ( $package['package_sha256'] ?? null ) : null,
@@ -63,6 +70,48 @@ final class SiteVault_Backup_History {
 		);
 
 		return array_slice( $items, 0, max( 1, $limit ) );
+	}
+
+	public function delete_backup( string $backup_id ): array {
+		$dir = $this->backup_directory( $backup_id );
+		if ( null === $dir || ! is_dir( $dir ) ) {
+			return array( 'success' => false, 'message' => 'Backup was not found.' );
+		}
+		if ( ! $this->remove_tree( $dir ) ) {
+			return array( 'success' => false, 'message' => 'Backup could not be completely deleted.' );
+		}
+		return array( 'success' => true );
+	}
+
+	public function backup_directory( string $backup_id ): ?string {
+		$backup_id = sanitize_key( $backup_id );
+		if ( ! preg_match( '/^sv-[a-z0-9-]+$/', $backup_id ) ) {
+			return null;
+		}
+		$root = WP_CONTENT_DIR . '/sitevault/backups';
+		$dir  = $root . '/' . $backup_id;
+		$root_normalized = trailingslashit( wp_normalize_path( $root ) );
+		$dir_normalized  = wp_normalize_path( $dir );
+		if ( 0 !== strpos( $dir_normalized, $root_normalized ) ) {
+			return null;
+		}
+		return $dir;
+	}
+
+	private function remove_tree( string $path ): bool {
+		if ( is_link( $path ) || is_file( $path ) ) {
+			return @unlink( $path );
+		}
+		if ( ! is_dir( $path ) ) {
+			return true;
+		}
+		$items = scandir( $path );
+		if ( false === $items ) return false;
+		foreach ( $items as $item ) {
+			if ( '.' === $item || '..' === $item ) continue;
+			if ( ! $this->remove_tree( $path . '/' . $item ) ) return false;
+		}
+		return @rmdir( $path );
 	}
 
 	public function get_package_file( string $backup_id ): ?string {

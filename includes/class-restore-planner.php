@@ -17,9 +17,7 @@ final class SiteVault_Restore_Planner {
 
 		$manifest_file = $root . '/manifest.json';
 		$sql_file      = $root . '/database/database.sql';
-		$content_file  = $root . '/content/wp-content.zip';
-
-		if ( ! is_readable( $manifest_file ) || ! is_readable( $sql_file ) || ! is_readable( $content_file ) ) {
+		if ( ! is_readable( $manifest_file ) || ! is_readable( $sql_file ) ) {
 			return $this->error( 'Restore workspace is missing required payload files.' );
 		}
 
@@ -52,8 +50,26 @@ final class SiteVault_Restore_Planner {
 			: 'cross-domain migration';
 
 		$sql_inspection = $this->inspect_sql( $sql_file, $source_prefix );
-		$content_size   = filesize( $content_file );
-		$sql_size       = filesize( $sql_file );
+		$content_format = (string) ( $manifest['payload']['wp_content']['format'] ?? 'single-zip' );
+		$content_parts = array();
+		$content_size = 0;
+		if ( 'chunked-zip' === $content_format ) {
+			foreach ( (array) ( $manifest['payload']['wp_content']['chunks'] ?? array() ) as $chunk ) {
+				$logical = (string) ( $chunk['file'] ?? '' );
+				$file = $root . '/' . $logical;
+				if ( '' === $logical || ! is_readable( $file ) ) return $this->error( 'Restore workspace is missing a required content chunk.' );
+				$content_parts[] = $logical;
+				$size = filesize( $file );
+				$content_size += false === $size ? 0 : (int) $size;
+			}
+		} else {
+			$content_parts[] = 'content/wp-content.zip';
+			$content_file = $root . '/content/wp-content.zip';
+			if ( ! is_readable( $content_file ) ) return $this->error( 'Restore workspace is missing wp-content archive.' );
+			$size = filesize( $content_file );
+			$content_size = false === $size ? 0 : (int) $size;
+		}
+		$sql_size = filesize( $sql_file );
 		$required_bytes = max( 0, (int) $content_size ) + max( 0, (int) $sql_size );
 		$free_space     = @disk_free_space( WP_CONTENT_DIR );
 		$recommended    = (int) ceil( $required_bytes * 2.2 );
@@ -134,7 +150,9 @@ final class SiteVault_Restore_Planner {
 			),
 			'content'                   => array(
 				'manifest_files' => (int) ( $manifest['payload']['wp_content']['files_archived'] ?? 0 ),
-				'archive_size'   => false === $content_size ? null : (int) $content_size,
+				'archive_size'   => (int) $content_size,
+				'format'         => $content_format,
+				'parts'          => $content_parts,
 			),
 			'environment'               => array(
 				'wp_content_writable' => is_writable( WP_CONTENT_DIR ),

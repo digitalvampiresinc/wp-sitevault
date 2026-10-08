@@ -79,23 +79,48 @@ final class SiteVault_Cutover_Readiness {
 			return $database_check;
 		}
 
+		$placeholder_check = $this->verify_no_placeholder_escapes( $database_state );
+		if ( ! $placeholder_check['success'] ) {
+			return $placeholder_check;
+		}
+
 		$content_check = $this->verify_shadow_content( $content_state );
 
 		if ( ! $content_check['success'] ) {
 			return $content_check;
 		}
 
-		$source_package = WP_CONTENT_DIR . '/sitevault/restore-plans/' . $plan_id . '/payload/content/wp-content.zip';
+		$source_parts = array_values( array_filter(
+			(array) ( $restore_plan['content']['parts'] ?? array() ),
+			static fn( $part ) => is_string( $part ) && '' !== $part
+		) );
 
-		if ( ! is_readable( $source_package ) ) {
-			return $this->error( 'Restore source wp-content archive is unavailable.' );
+		if ( empty( $source_parts ) ) {
+			$source_parts[] = 'content/wp-content.zip';
 		}
 
-		$source_content_hash = hash_file( 'sha256', $source_package );
+		$source_part_hashes = array();
 
-		if ( false === $source_content_hash ) {
-			return $this->error( 'Unable to fingerprint restore source wp-content archive.' );
+		foreach ( $source_parts as $logical_part ) {
+			$source_file = WP_CONTENT_DIR . '/sitevault/restore-plans/' . $plan_id . '/payload/' . ltrim( $logical_part, '/' );
+
+			if ( ! is_readable( $source_file ) || ! is_file( $source_file ) ) {
+				return $this->error( 'Restore source wp-content archive part is unavailable: ' . $logical_part );
+			}
+
+			$part_hash = hash_file( 'sha256', $source_file );
+
+			if ( false === $part_hash ) {
+				return $this->error( 'Unable to fingerprint restore source wp-content archive part: ' . $logical_part );
+			}
+
+			$source_part_hashes[ $logical_part ] = strtolower( $part_hash );
 		}
+
+		$source_content_hash = hash(
+			'sha256',
+			wp_json_encode( $source_part_hashes, JSON_UNESCAPED_SLASHES )
+		);
 
 		$state = array(
 			'status'                    => 'cutover_ready',
@@ -115,6 +140,7 @@ final class SiteVault_Cutover_Readiness {
 			'shadow_content_files'      => (int) ( $content_check['files'] ?? 0 ),
 			'shadow_content_bytes'      => (int) ( $content_check['bytes'] ?? 0 ),
 			'source_content_sha256'     => $source_content_hash,
+			'source_content_parts'      => $source_part_hashes,
 			'url_replacement_required'  => (bool) ( $restore_plan['changes']['url_replacement_required'] ?? false ),
 			'prefix_remap_required'     => (bool) ( $restore_plan['changes']['prefix_remap_required'] ?? false ),
 			'path_replacement_required' => (bool) ( $restore_plan['changes']['path_replacement_required'] ?? false ),
@@ -198,6 +224,49 @@ final class SiteVault_Cutover_Readiness {
 			'tables'  => count( $tables ),
 			'rows'    => $rows,
 		);
+	}
+
+	private function verify_no_placeholder_escapes( array $state ): array {
+		global $wpdb;
+
+		$tables = is_array( $state['table_map'] ?? null ) ? array_values( $state['table_map'] ) : array();
+
+		foreach ( $tables as $table ) {
+			if ( ! preg_match( '/^svstg_[A-Za-z0-9_]+$/', (string) $table ) ) {
+				return $this->error( 'Unexpected shadow table identifier during placeholder readiness check.' );
+			}
+
+			$table_sql = $this->quote_identifier( (string) $table );
+			$columns   = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sql}", ARRAY_A );
+
+			if ( ! is_array( $columns ) ) {
+				return $this->error( 'Unable to inspect shadow database for placeholder readiness.' );
+			}
+
+			foreach ( $columns as $column ) {
+				$type = strtolower( (string) ( $column['Type'] ?? '' ) );
+				$name = (string) ( $column['Field'] ?? '' );
+
+				if ( '' === $name || ! preg_match( '/(?:char|text|blob|json|enum|set)/', $type ) ) {
+					continue;
+				}
+
+				$column_sql = $this->quote_identifier( $name );
+				$count = $wpdb->get_var(
+					"SELECT COUNT(*) FROM {$table_sql} WHERE {$column_sql} REGEXP '\\\\{[0-9A-Fa-f]{64}\\\\}'"
+				);
+
+				if ( null === $count ) {
+					return $this->error( 'Unable to complete shadow placeholder readiness scan.' );
+				}
+
+				if ( (int) $count > 0 ) {
+					return $this->error( 'Cutover blocked: unsafe WordPress percent placeholder escapes remain in the shadow database.' );
+				}
+			}
+		}
+
+		return array( 'success' => true );
 	}
 
 	private function verify_shadow_content( array $state ): array {

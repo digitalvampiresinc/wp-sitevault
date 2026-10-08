@@ -169,6 +169,13 @@ final class SiteVault_Database_Stager {
 				return $this->fail( $state, 'Database staging encountered an unexpected live/source table identifier.' );
 			}
 
+			$legacy_repair = $this->normalize_legacy_placeholder_escapes( $transformed );
+			$transformed   = $legacy_repair['value'];
+			if ( $legacy_repair['replacements'] > 0 ) {
+				$state['legacy_placeholder_repairs'] += (int) $legacy_repair['replacements'];
+				$state['legacy_placeholder_rows']++;
+			}
+
 			$executable = ltrim( $transformed );
 
 			if (
@@ -257,6 +264,15 @@ final class SiteVault_Database_Stager {
 			);
 		}
 
+		$placeholder_scan = $this->scan_placeholder_escapes( array_values( $state['table_map'] ) );
+		if ( ! $placeholder_scan['success'] ) {
+			return $this->fail( $state, $placeholder_scan['message'] );
+		}
+		$state['placeholder_scan_remaining'] = (int) $placeholder_scan['matches'];
+		if ( $state['placeholder_scan_remaining'] > 0 ) {
+			return $this->fail( $state, 'Unsafe WordPress percent placeholder escapes remain in the shadow database after import.' );
+		}
+
 		$state['verified_tables'] = $verified_tables;
 		$state['verified_rows']   = $total_rows;
 		$state['status']          = $state['transform_required'] ? 'imported' : 'verified';
@@ -286,6 +302,8 @@ final class SiteVault_Database_Stager {
 				'rows_changed'      => 0,
 				'cells_changed'     => 0,
 				'replacements'      => 0,
+				'skipped_values'    => 0,
+				'warnings'          => array(),
 			);
 		}
 
@@ -369,6 +387,23 @@ final class SiteVault_Database_Stager {
 					return $this->fail( $state, $transformed['message'] . ' Table: ' . $table . ', column: ' . $column );
 				}
 
+				if ( ! empty( $transformed['skipped'] ) ) {
+					$state['transform_state']['skipped_values']++;
+					if ( count( $state['transform_state']['warnings'] ) < 50 ) {
+						$key_bits = array();
+						foreach ( $where as $key_name => $key_value ) {
+							$key_bits[] = $key_name . '=' . (string) $key_value;
+						}
+						$state['transform_state']['warnings'][] = array(
+							'table'   => $table,
+							'column'  => $column,
+							'key'     => implode( ', ', $key_bits ),
+							'message' => (string) ( $transformed['warning'] ?? 'Serialized value was left unchanged because it could not be transformed safely.' ),
+						);
+					}
+					continue;
+				}
+
 				if ( $transformed['value'] !== (string) $row[ $column ] ) {
 					$data[ $column ] = $transformed['value'];
 					$state['transform_state']['cells_changed']++;
@@ -427,6 +462,15 @@ final class SiteVault_Database_Stager {
 
 		if ( $total_rows !== (int) $state['manifest_rows'] ) {
 			return $this->fail( $state, 'Row count changed during migration transform. Staged database is unsafe.' );
+		}
+
+		$placeholder_scan = $this->scan_placeholder_escapes( array_values( $state['table_map'] ) );
+		if ( ! $placeholder_scan['success'] ) {
+			return $this->fail( $state, $placeholder_scan['message'] );
+		}
+		$state['placeholder_scan_remaining'] = (int) $placeholder_scan['matches'];
+		if ( $state['placeholder_scan_remaining'] > 0 ) {
+			return $this->fail( $state, 'Unsafe WordPress percent placeholder escapes remain in the transformed shadow database.' );
 		}
 
 		$state['verified_rows'] = $total_rows;
@@ -660,11 +704,23 @@ final class SiteVault_Database_Stager {
 			$decoded = @unserialize( $value, array( 'allowed_classes' => false ) );
 
 			if ( false === $decoded && 'b:0;' !== $value ) {
-				return $this->error( 'Serialized migration value could not be decoded safely.' );
+				return array(
+					'success' => true,
+					'value' => $value,
+					'replacements' => 0,
+					'skipped' => true,
+					'warning' => 'Serialized value could not be decoded safely and was left unchanged.',
+				);
 			}
 
 			if ( is_object( $decoded ) ) {
-				return $this->error( 'Serialized object data requires the dedicated object-safe migration layer before live restore.' );
+				return array(
+					'success' => true,
+					'value' => $value,
+					'replacements' => 0,
+					'skipped' => true,
+					'warning' => 'Serialized object value was left unchanged because object-safe migration is unavailable.',
+				);
 			}
 
 			$nested = $this->transform_mixed( $decoded, $pairs, $depth + 1 );
@@ -672,11 +728,21 @@ final class SiteVault_Database_Stager {
 			if ( ! $nested['success'] ) {
 				return $nested;
 			}
+			if ( ! empty( $nested['skipped'] ) ) {
+				return array(
+					'success' => true,
+					'value' => $value,
+					'replacements' => 0,
+					'skipped' => true,
+					'warning' => (string) ( $nested['warning'] ?? 'Serialized value contains data that could not be transformed safely and was left unchanged.' ),
+				);
+			}
 
 			return array(
 				'success'      => true,
 				'value'        => serialize( $nested['value'] ),
 				'replacements' => $nested['replacements'],
+				'skipped'      => false,
 			);
 		}
 
@@ -711,10 +777,16 @@ final class SiteVault_Database_Stager {
 				if ( ! $key_result['success'] ) {
 					return $key_result;
 				}
+				if ( ! empty( $key_result['skipped'] ) ) {
+					return $key_result;
+				}
 
 				$item_result = $this->transform_mixed( $item, $pairs, $depth + 1 );
 
 				if ( ! $item_result['success'] ) {
+					return $item_result;
+				}
+				if ( ! empty( $item_result['skipped'] ) ) {
 					return $item_result;
 				}
 
@@ -726,7 +798,13 @@ final class SiteVault_Database_Stager {
 		}
 
 		if ( is_object( $value ) ) {
-			return $this->error( 'Serialized object data requires the dedicated object-safe migration layer before live restore.' );
+			return array(
+				'success' => true,
+				'value' => $value,
+				'replacements' => 0,
+				'skipped' => true,
+				'warning' => 'Serialized value contains an object and was left unchanged because object-safe migration is unavailable.',
+			);
 		}
 
 		return array( 'success' => true, 'value' => $value, 'replacements' => 0 );
@@ -752,6 +830,67 @@ final class SiteVault_Database_Stager {
 			'in_double'   => false,
 			'in_backtick' => false,
 			'escaped'     => false,
+		);
+	}
+
+	private function normalize_legacy_placeholder_escapes( string $sql ): array {
+		$count = 0;
+		$value = preg_replace_callback(
+			'/\\{[0-9a-f]{64}\\}/i',
+			static function ( array $match ) use ( &$count ): string {
+				$count++;
+				return '%';
+			},
+			$sql
+		);
+
+		return array(
+			'value'        => is_string( $value ) ? $value : $sql,
+			'replacements' => $count,
+		);
+	}
+
+	private function scan_placeholder_escapes( array $tables ): array {
+		global $wpdb;
+
+		$matches = 0;
+
+		foreach ( $tables as $table ) {
+			if ( ! preg_match( '/^svstg_[A-Za-z0-9_]+$/', (string) $table ) ) {
+				return $this->error( 'Unexpected shadow table identifier during placeholder verification.' );
+			}
+
+			$table_sql = $this->quote_identifier( (string) $table );
+			$columns   = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sql}", ARRAY_A );
+
+			if ( ! is_array( $columns ) ) {
+				return $this->error( 'Unable to inspect shadow database during placeholder verification.' );
+			}
+
+			foreach ( $columns as $column ) {
+				$type = strtolower( (string) ( $column['Type'] ?? '' ) );
+				$name = (string) ( $column['Field'] ?? '' );
+
+				if ( '' === $name || ! preg_match( '/(?:char|text|blob|json|enum|set)/', $type ) ) {
+					continue;
+				}
+
+				$column_sql = $this->quote_identifier( $name );
+				$count = $wpdb->get_var(
+					"SELECT COUNT(*) FROM {$table_sql} WHERE {$column_sql} REGEXP '\\\\{[0-9A-Fa-f]{64}\\\\}'"
+				);
+
+				if ( null === $count ) {
+					return $this->error( 'Unable to scan shadow database for unsafe WordPress percent placeholders.' );
+				}
+
+				$matches += (int) $count;
+			}
+		}
+
+		return array(
+			'success' => true,
+			'matches' => $matches,
 		);
 	}
 

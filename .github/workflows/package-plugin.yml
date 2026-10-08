@@ -24,10 +24,13 @@ jobs:
       - name: Build installable plugin ZIP
         run: bash bin/build-plugin.sh
 
-      - name: Verify package root
+      - name: Verify package root and required admin assets
         run: |
           unzip -l build/wp-sitevault.zip
           test "$(unzip -Z1 build/wp-sitevault.zip | head -n 1)" = "wp-sitevault/"
+          unzip -Z1 build/wp-sitevault.zip | grep -qx "wp-sitevault/admin/assets/js/admin-actions.js"
+          unzip -Z1 build/wp-sitevault.zip | grep -qx "wp-sitevault/admin/assets/js/chunk-upload.js"
+          unzip -Z1 build/wp-sitevault.zip | grep -qx "wp-sitevault/admin/assets/js/restore-plan.js"
 
       - name: Upload installable ZIP
         uses: actions/upload-artifact@v4

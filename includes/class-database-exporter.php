@@ -253,13 +253,31 @@ final class SiteVault_Database_Exporter {
 	}
 
 	private function sql_value( $value ): string {
-		global $wpdb;
-
 		if ( null === $value ) {
 			return 'NULL';
 		}
 
-		return "'" . $wpdb->_real_escape( (string) $value ) . "'";
+		/*
+		 * Do not use wpdb::_real_escape() or esc_sql() for dump serialization.
+		 * WordPress adds temporary placeholder-escape hashes around literal percent
+		 * signs for prepared-query safety. Those placeholders are normally removed
+		 * only when WordPress executes a query; writing them directly into a dump
+		 * permanently corrupts %, including CSS, Yoast variables and serialized data.
+		 */
+		$escaped = strtr(
+			(string) $value,
+			array(
+				"\\"   => "\\\\",
+				"\0"   => "\\0",
+				"\n"   => "\\n",
+				"\r"   => "\\r",
+				"'"    => "\\'",
+				'"'    => '\\"',
+				"\x1a" => "\\Z",
+			)
+		);
+
+		return "'" . $escaped . "'";
 	}
 
 	private function quote_identifier( string $identifier ): string {

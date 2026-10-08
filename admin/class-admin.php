@@ -26,10 +26,19 @@ final class SiteVault_Admin {
 		add_action( 'wp_ajax_sitevault_process_database_batch', array( $this, 'handle_ajax_database_batch' ) );
 		add_action( 'wp_ajax_sitevault_process_content_batch', array( $this, 'handle_ajax_content_batch' ) );
 		add_action( 'wp_ajax_sitevault_build_package', array( $this, 'handle_ajax_build_package' ) );
+		add_action( 'wp_ajax_sitevault_backup_worker_tick', array( $this, 'handle_ajax_backup_worker_tick' ) );
 		add_action( 'admin_post_sitevault_download_backup', array( $this, 'handle_download_backup' ) );
+		add_action( 'admin_post_sitevault_resume_backup', array( $this, 'handle_resume_backup' ) );
+		add_action( 'admin_post_sitevault_delete_backup', array( $this, 'handle_delete_backup' ) );
 		add_action( 'admin_post_sitevault_import_validate', array( $this, 'handle_import_validate' ) );
+		add_action( 'wp_ajax_sitevault_upload_init', array( $this, 'handle_ajax_upload_init' ) );
+		add_action( 'wp_ajax_sitevault_upload_chunk', array( $this, 'handle_ajax_upload_chunk' ) );
+		add_action( 'wp_ajax_sitevault_upload_finalize', array( $this, 'handle_ajax_upload_finalize' ) );
+		add_action( 'wp_ajax_sitevault_upload_ping', array( $this, 'handle_ajax_upload_ping' ) );
 		add_action( 'admin_post_sitevault_validate_existing', array( $this, 'handle_validate_existing' ) );
 		add_action( 'admin_post_sitevault_prepare_restore_plan', array( $this, 'handle_prepare_restore_plan' ) );
+		add_action( 'wp_ajax_sitevault_restore_plan_init', array( $this, 'handle_ajax_restore_plan_init' ) );
+		add_action( 'wp_ajax_sitevault_restore_plan_step', array( $this, 'handle_ajax_restore_plan_step' ) );
 		add_action( 'admin_post_sitevault_start_restore_safety', array( $this, 'handle_start_restore_safety' ) );
 		add_action( 'wp_ajax_sitevault_restore_safety_database', array( $this, 'handle_ajax_restore_safety_database' ) );
 		add_action( 'wp_ajax_sitevault_restore_safety_content', array( $this, 'handle_ajax_restore_safety_content' ) );
@@ -58,6 +67,48 @@ final class SiteVault_Admin {
 			array(),
 			SITEVAULT_VERSION
 		);
+		wp_enqueue_script(
+			'sitevault-admin-actions',
+			SITEVAULT_URL . 'admin/assets/js/admin-actions.js',
+			array(),
+			SITEVAULT_VERSION,
+			true
+		);
+		$chunk_upload_file = SITEVAULT_PATH . 'admin/assets/js/chunk-upload.js';
+		$chunk_upload_ver  = is_readable( $chunk_upload_file ) ? (string) filemtime( $chunk_upload_file ) : SITEVAULT_VERSION;
+		wp_enqueue_script(
+			'sitevault-chunk-upload',
+			SITEVAULT_URL . 'admin/assets/js/chunk-upload.js',
+			array(),
+			$chunk_upload_ver,
+			true
+		);
+		wp_localize_script(
+			'sitevault-chunk-upload',
+			'SiteVaultChunkUpload',
+			array(
+				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+				'nonce' => wp_create_nonce( 'sitevault_chunk_upload' ),
+				'chunkSize' => 4194304,
+			)
+		);
+		$restore_plan_file = SITEVAULT_PATH . 'admin/assets/js/restore-plan.js';
+		$restore_plan_ver  = is_readable( $restore_plan_file ) ? (string) filemtime( $restore_plan_file ) : SITEVAULT_VERSION;
+		wp_enqueue_script(
+			'sitevault-restore-plan',
+			SITEVAULT_URL . 'admin/assets/js/restore-plan.js',
+			array(),
+			$restore_plan_ver,
+			true
+		);
+		wp_localize_script(
+			'sitevault-restore-plan',
+			'SiteVaultRestorePlan',
+			array(
+				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+				'nonce' => wp_create_nonce( 'sitevault_restore_plan' ),
+			)
+		);
 	}
 
 	public function register_menu(): void {
@@ -82,7 +133,7 @@ final class SiteVault_Admin {
 			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be started.' );
 		}
 
-		update_option( 'sitevault_active_backup_id', $result['backup_id'], false );
+		SiteVault_Backup_Worker::schedule( $result['backup_id'] );
 
 		$this->redirect_with_message( 'started', 'Backup initialised. Database export is ready to process.' );
 	}
@@ -201,6 +252,25 @@ final class SiteVault_Admin {
 		);
 	}
 
+	public function handle_ajax_backup_worker_tick(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'You are not allowed to process SiteVault backups.' ), 403 );
+		}
+		check_ajax_referer( 'sitevault_backup_worker_tick', 'nonce' );
+		$backup_id = sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) );
+		if ( '' === $backup_id ) {
+			wp_send_json_success( array( 'status' => 'idle', 'continue' => false ) );
+		}
+		$result = ( new SiteVault_Backup_Worker() )->tick( $backup_id );
+		if ( ! $result['success'] ) {
+			wp_send_json_error( $result, 500 );
+		}
+		if ( ! empty( $result['continue'] ) ) {
+			SiteVault_Backup_Worker::schedule( $backup_id );
+		}
+		wp_send_json_success( $result );
+	}
+
 	public function handle_ajax_build_package(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => 'You are not allowed to build SiteVault packages.' ), 403 );
@@ -249,6 +319,35 @@ final class SiteVault_Admin {
 				'entries'        => (int) ( $state['entries'] ?? 0 ),
 			)
 		);
+	}
+
+	public function handle_resume_backup(): void {
+		$this->authorise_request( 'sitevault_resume_backup' );
+		$backup_id = isset( $_POST['backup_id'] ) ? sanitize_key( wp_unslash( $_POST['backup_id'] ) ) : '';
+		$history   = new SiteVault_Backup_History();
+		$backup_dir= $history->backup_directory( $backup_id );
+		if ( null === $backup_dir || ! is_dir( $backup_dir ) ) {
+			$this->redirect_with_message( 'error', 'The selected backup could not be found.' );
+		}
+		$result = ( new SiteVault_Content_Archiver() )->resume_failed( $backup_dir );
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be resumed.' );
+		}
+		SiteVault_Backup_Worker::schedule( $backup_id );
+		$this->redirect_with_message( 'started', 'Backup resumed from its last saved checkpoint. Background continuation has been scheduled.' );
+	}
+
+	public function handle_delete_backup(): void {
+		$this->authorise_request( 'sitevault_delete_backup' );
+		$backup_id = isset( $_POST['backup_id'] ) ? sanitize_key( wp_unslash( $_POST['backup_id'] ) ) : '';
+		$result    = ( new SiteVault_Backup_History() )->delete_backup( $backup_id );
+		if ( ! $result['success'] ) {
+			$this->redirect_with_message( 'error', $result['message'] ?? 'Backup could not be deleted.' );
+		}
+		if ( $backup_id === sanitize_key( (string) get_option( 'sitevault_active_backup_id', '' ) ) ) {
+			delete_option( 'sitevault_active_backup_id' );
+		}
+		$this->redirect_with_message( 'complete', 'Backup deleted.' );
 	}
 
 	public function handle_download_backup(): void {
@@ -309,6 +408,43 @@ final class SiteVault_Admin {
 		exit;
 	}
 
+	public function handle_ajax_upload_ping(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		wp_send_json_success( array( 'status' => 'ok', 'time' => gmdate( 'c' ) ) );
+	}
+
+	public function handle_ajax_upload_init(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		$name = isset( $_POST['name'] ) ? sanitize_file_name( wp_unslash( $_POST['name'] ) ) : '';
+		$size = isset( $_POST['size'] ) ? (int) $_POST['size'] : 0;
+		$resume_id = isset( $_POST['resume_id'] ) ? sanitize_key( wp_unslash( $_POST['resume_id'] ) ) : '';
+		$result = ( new SiteVault_Import_Manager() )->initialise_chunk_upload( $name, $size, $resume_id );
+		if ( ! $result['success'] ) wp_send_json_error( array( 'message' => $result['message'] ?? 'Unable to initialise upload.' ), 400 );
+		wp_send_json_success( $result['state'] );
+	}
+
+	public function handle_ajax_upload_chunk(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		$upload_id = isset( $_POST['upload_id'] ) ? sanitize_key( wp_unslash( $_POST['upload_id'] ) ) : '';
+		$index = isset( $_POST['index'] ) ? (int) $_POST['index'] : -1;
+		$file = isset( $_FILES['chunk'] ) && is_array( $_FILES['chunk'] ) ? $_FILES['chunk'] : array();
+		$result = ( new SiteVault_Import_Manager() )->append_upload_chunk( $upload_id, $index, $file );
+		if ( ! $result['success'] ) wp_send_json_error( array( 'message' => $result['message'] ?? 'Chunk upload failed.', 'state' => $result['state'] ?? null ), 409 );
+		wp_send_json_success( $result['state'] );
+	}
+
+	public function handle_ajax_upload_finalize(): void {
+		$this->authorise_ajax( 'sitevault_chunk_upload' );
+		$upload_id = isset( $_POST['upload_id'] ) ? sanitize_key( wp_unslash( $_POST['upload_id'] ) ) : '';
+		$result = ( new SiteVault_Import_Manager() )->finalise_chunk_upload( $upload_id );
+		if ( ! $result['success'] ) {
+			update_option( 'sitevault_last_import_validation', $result['state'] ?? array( 'status' => 'invalid', 'error' => $result['message'] ?? 'Package validation failed.' ), false );
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Package validation failed.' ), 400 );
+		}
+		update_option( 'sitevault_last_import_validation', $result['state'], false );
+		wp_send_json_success( $result['state'] );
+	}
+
 	public function handle_import_validate(): void {
 		$this->authorise_request( 'sitevault_import_validate' );
 
@@ -354,6 +490,45 @@ final class SiteVault_Admin {
 
 		update_option( 'sitevault_last_import_validation', $result['state'], false );
 		$this->redirect_with_message( 'complete', 'Existing SiteVault backup validated successfully for restore compatibility.' );
+	}
+
+	public function handle_ajax_restore_plan_init(): void {
+		$this->authorise_ajax( 'sitevault_restore_plan' );
+		$validation = get_option( 'sitevault_last_import_validation', array() );
+		if ( ! is_array( $validation ) || empty( $validation['package_file'] ) ) {
+			wp_send_json_error( array( 'message' => 'No validated SiteVault package is available.' ), 400 );
+		}
+		$result = ( new SiteVault_Restore_Workspace() )->initialise( $validation );
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Unable to initialise restore workspace.' ), 500 );
+		}
+		wp_send_json_success( $result['state'] );
+	}
+
+	public function handle_ajax_restore_plan_step(): void {
+		$this->authorise_ajax( 'sitevault_restore_plan' );
+		$plan_id = isset( $_POST['plan_id'] ) ? sanitize_key( wp_unslash( $_POST['plan_id'] ) ) : '';
+		$result = ( new SiteVault_Restore_Workspace() )->process_batch( $plan_id );
+		if ( ! $result['success'] ) {
+			wp_send_json_error( array( 'message' => $result['message'] ?? 'Restore workspace preparation failed.', 'state' => $result['state'] ?? null ), 500 );
+		}
+		$state = $result['state'];
+		if ( 'prepared' === ( $state['status'] ?? '' ) ) {
+			$plan = ( new SiteVault_Restore_Planner() )->create_plan( $state );
+			if ( ! $plan['success'] ) {
+				wp_send_json_error( array( 'message' => $plan['message'] ?? 'Restore plan creation failed.' ), 500 );
+			}
+			$final_plan = $plan['plan'];
+			$final_plan['workspace'] = array(
+				'plan_id'            => $state['plan_id'] ?? '',
+				'extracted_entries'  => (int) ( $state['extracted_entries'] ?? 0 ),
+				'verified_entries'   => (int) ( $state['verified_entries'] ?? 0 ),
+				'integrity_verified' => (bool) ( $state['integrity_verified'] ?? false ),
+			);
+			update_option( 'sitevault_last_restore_plan', $final_plan, false );
+			wp_send_json_success( array( 'status' => 'complete', 'workspace' => $state, 'plan' => $final_plan ) );
+		}
+		wp_send_json_success( array( 'status' => 'running', 'workspace' => $state ) );
 	}
 
 	public function handle_prepare_restore_plan(): void {
@@ -785,6 +960,7 @@ final class SiteVault_Admin {
 			'transform_rows_changed'   => (int) ( $transform['rows_changed'] ?? 0 ),
 			'transform_cells_changed'  => (int) ( $transform['cells_changed'] ?? 0 ),
 			'transform_replacements'   => (int) ( $transform['replacements'] ?? 0 ),
+			'transform_skipped_values' => (int) ( $transform['skipped_values'] ?? 0 ),
 			'live_tables_modified'     => (bool) ( $state['live_tables_modified'] ?? false ),
 			'ready_for_live_promotion' => (bool) ( $state['ready_for_live_promotion'] ?? false ),
 			'promotion_blocker'        => $state['promotion_blocker'] ?? null,
