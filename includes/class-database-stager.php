@@ -169,6 +169,13 @@ final class SiteVault_Database_Stager {
 				return $this->fail( $state, 'Database staging encountered an unexpected live/source table identifier.' );
 			}
 
+			$legacy_repair = $this->normalize_legacy_placeholder_escapes( $transformed );
+			$transformed   = $legacy_repair['value'];
+			if ( $legacy_repair['replacements'] > 0 ) {
+				$state['legacy_placeholder_repairs'] += (int) $legacy_repair['replacements'];
+				$state['legacy_placeholder_rows']++;
+			}
+
 			$executable = ltrim( $transformed );
 
 			if (
@@ -255,6 +262,15 @@ final class SiteVault_Database_Stager {
 				'Staging row total does not match the backup manifest. Expected ' .
 				(int) $state['manifest_rows'] . ', found ' . $total_rows . '.'
 			);
+		}
+
+		$placeholder_scan = $this->scan_placeholder_escapes( array_values( $state['table_map'] ) );
+		if ( ! $placeholder_scan['success'] ) {
+			return $this->fail( $state, $placeholder_scan['message'] );
+		}
+		$state['placeholder_scan_remaining'] = (int) $placeholder_scan['matches'];
+		if ( $state['placeholder_scan_remaining'] > 0 ) {
+			return $this->fail( $state, 'Unsafe WordPress percent placeholder escapes remain in the shadow database after import.' );
 		}
 
 		$state['verified_tables'] = $verified_tables;
@@ -446,6 +462,15 @@ final class SiteVault_Database_Stager {
 
 		if ( $total_rows !== (int) $state['manifest_rows'] ) {
 			return $this->fail( $state, 'Row count changed during migration transform. Staged database is unsafe.' );
+		}
+
+		$placeholder_scan = $this->scan_placeholder_escapes( array_values( $state['table_map'] ) );
+		if ( ! $placeholder_scan['success'] ) {
+			return $this->fail( $state, $placeholder_scan['message'] );
+		}
+		$state['placeholder_scan_remaining'] = (int) $placeholder_scan['matches'];
+		if ( $state['placeholder_scan_remaining'] > 0 ) {
+			return $this->fail( $state, 'Unsafe WordPress percent placeholder escapes remain in the transformed shadow database.' );
 		}
 
 		$state['verified_rows'] = $total_rows;
@@ -805,6 +830,67 @@ final class SiteVault_Database_Stager {
 			'in_double'   => false,
 			'in_backtick' => false,
 			'escaped'     => false,
+		);
+	}
+
+	private function normalize_legacy_placeholder_escapes( string $sql ): array {
+		$count = 0;
+		$value = preg_replace_callback(
+			'/\\{[0-9a-f]{64}\\}/i',
+			static function ( array $match ) use ( &$count ): string {
+				$count++;
+				return '%';
+			},
+			$sql
+		);
+
+		return array(
+			'value'        => is_string( $value ) ? $value : $sql,
+			'replacements' => $count,
+		);
+	}
+
+	private function scan_placeholder_escapes( array $tables ): array {
+		global $wpdb;
+
+		$matches = 0;
+
+		foreach ( $tables as $table ) {
+			if ( ! preg_match( '/^svstg_[A-Za-z0-9_]+$/', (string) $table ) ) {
+				return $this->error( 'Unexpected shadow table identifier during placeholder verification.' );
+			}
+
+			$table_sql = $this->quote_identifier( (string) $table );
+			$columns   = $wpdb->get_results( "SHOW COLUMNS FROM {$table_sql}", ARRAY_A );
+
+			if ( ! is_array( $columns ) ) {
+				return $this->error( 'Unable to inspect shadow database during placeholder verification.' );
+			}
+
+			foreach ( $columns as $column ) {
+				$type = strtolower( (string) ( $column['Type'] ?? '' ) );
+				$name = (string) ( $column['Field'] ?? '' );
+
+				if ( '' === $name || ! preg_match( '/(?:char|text|blob|json|enum|set)/', $type ) ) {
+					continue;
+				}
+
+				$column_sql = $this->quote_identifier( $name );
+				$count = $wpdb->get_var(
+					"SELECT COUNT(*) FROM {$table_sql} WHERE {$column_sql} REGEXP '\\\\{[0-9A-Fa-f]{64}\\\\}'"
+				);
+
+				if ( null === $count ) {
+					return $this->error( 'Unable to scan shadow database for unsafe WordPress percent placeholders.' );
+				}
+
+				$matches += (int) $count;
+			}
+		}
+
+		return array(
+			'success' => true,
+			'matches' => $matches,
 		);
 	}
 
